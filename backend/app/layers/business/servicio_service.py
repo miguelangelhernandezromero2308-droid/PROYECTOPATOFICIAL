@@ -111,7 +111,8 @@ class ServicioService:
         if data.nombre: hotel.nombre = data.nombre
         if data.descripcion: hotel.descripcion = data.descripcion
         if data.id_tp_turi: hotel.id_tp_turi = data.id_tp_turi
-        if data.id_gama: hotel.id_gama = data.id_gama
+        if data.id_gama: hotel.id_gama = data.id_gama   
+        if data.id_ubi: hotel.id_ubi = data.id_ubi
         
         ServicioRepository.actualizar(db, hotel)
         return {"mensaje": "Información del hotel actualizada."}

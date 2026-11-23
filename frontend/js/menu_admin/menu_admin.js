@@ -857,7 +857,7 @@ async function cargarUbicaciones() {
                             <td class="mono">#${u.id_ubi}</td>
                             <td>${escapeHtml(u.direccion)}</td>
                             <td>${escapeHtml(u.barrio || "--")}</td>
-                            <td class="mono">#${u.id_cdad}</td>
+                            <td class="mono">${u.id_cdad ? "#" + u.id_cdad : "--"}</td>
                             <td class="mono">${escapeHtml(u.latitud)}, ${escapeHtml(u.longitud)}</td>
                             <td>
                                 <button class="btn btn-danger-outline btn-sm" onclick="eliminarUbicacion(${u.id_ubi})">Eliminar</button>
@@ -877,49 +877,14 @@ function abrirModalUbicacion() {
         "Nueva ubicación geográfica",
         `
             <div class="field-group">
-                <label>Dirección</label>
-                <input class="input" name="direccion" required placeholder="Ej: Carrera 7 # 32-16">
+                <label>Dirección o lugar</label>
+                <input class="input" name="direccion" required placeholder="Ej: Carrera 7 # 32-16, Bogotá">
             </div>
-            <div class="field-row">
-                <div class="field-group">
-                    <label>Barrio / Sector</label>
-                    <input class="input" name="barrio" placeholder="Centro">
-                </div>
-                <div class="field-group">
-                    <label>ID Ciudad</label>
-                    <input class="input" type="number" name="id_cdad" required value="1" min="1">
-                </div>
-            </div>
-            <div class="field-row">
-                <div class="field-group">
-                    <label>Latitud (opcional)</label>
-                    <input class="input" name="latitud" placeholder="Automática si se deja vacío">
-                </div>
-                <div class="field-group">
-                    <label>Longitud (opcional)</label>
-                    <input class="input" name="longitud" placeholder="Automática si se deja vacío">
-                </div>
-            </div>
-            <div class="field-group">
-                <label>Descripción (opcional)</label>
-                <input class="input" name="descripcion">
-            </div>
+            <p class="muted">La ciudad y las coordenadas se buscan automáticamente en el mapa. Incluye la ciudad para mayor precisión.</p>
         `,
         async (fd) => {
-            const payload = {
-                direccion: fd.get("direccion"),
-                barrio: fd.get("barrio") || null,
-                id_cdad: Number(fd.get("id_cdad")),
-                descripcion: fd.get("descripcion") || null
-            };
-            if (fd.get("latitud").trim()) payload.latitud = fd.get("latitud").trim();
-            if (fd.get("longitud").trim()) payload.longitud = fd.get("longitud").trim();
-
-            await apiFetch("/ubicaciones/", {
-                method: "POST",
-                body: JSON.stringify(payload)
-            });
-            mostrarToast("Ubicación registrada.");
+            const id = await resolverUbicacionTexto(fd.get("direccion"));
+            mostrarToast(`Ubicación registrada (#${id}).`);
             cargarUbicaciones();
         }
     );
@@ -979,36 +944,28 @@ async function cargarTrayectos() {
 }
 
 function abrirModalTrayecto() {
-    if (cacheUbicaciones.length < 2) {
-        mostrarToast("Necesitas al menos 2 ubicaciones registradas para calcular un trayecto.", "err");
-        return;
-    }
-    const opts = cacheUbicaciones
-        .map(u => `<option value="${u.id_ubi}">#${u.id_ubi} · ${escapeHtml(u.direccion)}</option>`)
-        .join("");
-
     abrirModal(
         "Calcular nuevo trayecto",
         `
             <div class="field-group">
-                <label>Ubicación de origen</label>
-                <select class="select" name="id_origen">${opts}</select>
+                <label>Origen</label>
+                <input class="input" name="origen" required placeholder="Ej: Terminal de Bogotá">
             </div>
             <div class="field-group">
-                <label>Ubicación de destino</label>
-                <select class="select" name="id_destino">${opts}</select>
+                <label>Destino</label>
+                <input class="input" name="destino" required placeholder="Ej: Parque Tayrona, Santa Marta">
             </div>
         `,
         async (fd) => {
+            const idOrigen = await resolverUbicacionTexto(fd.get("origen"));
+            const idDestino = await resolverUbicacionTexto(fd.get("destino"));
             await apiFetch("/trayectos/", {
                 method: "POST",
-                body: JSON.stringify({
-                    id_origen: Number(fd.get("id_origen")),
-                    id_destino: Number(fd.get("id_destino"))
-                })
+                body: JSON.stringify({ id_origen: idOrigen, id_destino: idDestino })
             });
             mostrarToast("Trayecto calculado y guardado.");
             cargarTrayectos();
+            cargarUbicaciones();
         }
     );
 }
@@ -1052,4 +1009,21 @@ async function enviarFormularioModal(e) {
     } finally {
         btn.disabled = false;
     }
+}
+
+async function resolverUbicacionTexto(texto) {
+    texto = (texto || "").trim();
+    const lugar = await apiFetch(`/ubicaciones/buscar?texto=${encodeURIComponent(texto)}`);
+    const ubi = await apiFetch("/ubicaciones/desde-mapa", {
+        method: "POST",
+        body: JSON.stringify({
+            direccion: lugar.direccion,
+            barrio: lugar.barrio,
+            latitud: lugar.latitud,
+            longitud: lugar.longitud,
+            descripcion: lugar.descripcion,
+            id_cdad: lugar.id_cdad
+        })
+    });
+    return ubi.id_ubi;
 }

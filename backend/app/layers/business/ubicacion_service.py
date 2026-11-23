@@ -6,6 +6,7 @@ from app.layers.data.ubicacion_repository import UbicacionRepository
 from app.layers.models.ubicacion import Ubicacion, UbicacionCreate, UbicacionUpdate, UbicacionLibreCreate
 from app.layers.models.ciudad import Ciudad
 from app.core.maps import obtener_coordenadas_exactas, buscar_lugar as geocodificar_lugar
+import re
 
 class UbicacionService:
     @staticmethod
@@ -63,6 +64,23 @@ class UbicacionService:
         sin_tildes = unicodedata.normalize("NFD", texto or "").encode("ascii", "ignore").decode()
         return sin_tildes.lower().strip()
 
+   
+    @staticmethod
+    def _limpiar_ciudad(texto: str) -> str:
+        n = UbicacionService._normalizar(texto)
+        n = re.sub(r"\b(d\.?\s?c\.?|distrito capital|distrito especial|departamento de)\b", " ", n)
+        n = re.sub(r"[^a-z0-9 ]", " ", n)
+        return " ".join(n.split())
+
+    @staticmethod
+    def _id_ciudad(ciudades_db, candidatas):
+        for cand in candidatas or []:
+            objetivo = UbicacionService._limpiar_ciudad(cand)
+            for c in ciudades_db:
+                if UbicacionService._limpiar_ciudad(c.nombre) == objetivo:
+                    return c.id_cdad
+        return None
+
     @staticmethod
     def buscar_lugar(db: Session, texto: str):
         texto = (texto or "").strip()
@@ -71,26 +89,24 @@ class UbicacionService:
 
         lugar = geocodificar_lugar(texto)
         if not lugar:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No se encontró '{texto}' en el mapa. Intenta agregar la ciudad.")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No se encontró '{texto}' en el mapa. Intenta agregar la ciudad o el barrio.")
 
-        # Intentar relacionar con una ciudad que ya exista en la BD
-        id_cdad = None
-        if lugar["ciudad"]:
-            objetivo = UbicacionService._normalizar(lugar["ciudad"])
-            for c in db.exec(select(Ciudad)).all():
-                if UbicacionService._normalizar(c.nombre) == objetivo:
-                    id_cdad = c.id_cdad
-                    break
+        ciudades_db = db.exec(select(Ciudad)).all()
 
-        return {
-            "direccion": texto,
-            "barrio": lugar["barrio"],
-            "latitud": lugar["latitud"],
-            "longitud": lugar["longitud"],
-            "descripcion": lugar["nombre_mapa"],
-            "id_cdad": id_cdad,
-            "ciudad": lugar["ciudad"]
-        }
+        def armar(l):
+            return {
+                "direccion": texto,
+                "barrio": l["barrio"],
+                "latitud": l["latitud"],
+                "longitud": l["longitud"],
+                "descripcion": l["nombre_mapa"],
+                "id_cdad": UbicacionService._id_ciudad(ciudades_db, l.get("ciudades")),  # puede ser None, no importa
+                "ciudad": l["ciudad"],
+            }
+
+        resp = armar(lugar)
+        resp["alternativas"] = [armar(a) for a in lugar.get("alternativas", [])]
+        return resp
 
     @staticmethod
     def crear_ubicacion_libre(db: Session, data: UbicacionLibreCreate):

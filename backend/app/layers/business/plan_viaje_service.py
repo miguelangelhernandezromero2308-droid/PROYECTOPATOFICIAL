@@ -11,6 +11,7 @@ from app.layers.models.servicio_transporte import ServicioTransporte
 from datetime import date
 from app.layers.models.servicio_recreacion import ServicioRecreacion
 from app.core.travel import calcular_distancia_km, calcular_tiempo
+from app.layers.models.servicio_guia import ServicioGuia
 
 class PlanViajeService:
     @staticmethod
@@ -89,10 +90,17 @@ class PlanViajeService:
                 id_ori_final = ruta.id_origen
                 id_des_final = ruta.id_destino
             
-        elif data.tipo_item in ['DESTINO_TURISTICO', 'RECREACION', 'GUIA']:
+        elif data.tipo_item in ['DESTINO_TURISTICO', 'RECREACION']:
             rec = db.get(ServicioRecreacion, data.id_item_especifico)
-            if rec: costo_unitario = Decimal(str(rec.vlr_persona))
-            tiempo_minutos = 180 
+            if not rec: raise HTTPException(404, "Actividad no encontrada.")
+            costo_unitario = Decimal(str(rec.vlr_persona))
+            tiempo_minutos = 180
+
+        elif data.tipo_item == 'GUIA':
+            guia = db.get(ServicioGuia, data.id_item_especifico)
+            if not guia: raise HTTPException(404, "Tour no encontrado.")
+            costo_unitario = Decimal(str(guia.vlr_tour))
+            tiempo_minutos = int(guia.duracion_horas * 60) if guia.duracion_horas else 180
             
         subtotal = costo_unitario * Decimal(str(data.cantidad))
 

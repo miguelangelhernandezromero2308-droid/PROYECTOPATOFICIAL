@@ -163,7 +163,8 @@ async function buscarEnMapa() {
         destinoResuelto = { texto: tDestino, lugar: lugarDestino };
 
         dibujarPreview(lugarOrigen, lugarDestino);
-        info.innerHTML = `📍 <b>Origen:</b> ${lugarOrigen.descripcion}<br>🏁 <b>Destino:</b> ${lugarDestino.descripcion}`;
+        actualizarInfoBusqueda();
+        mostrarAlternativas();
         return true;
     } catch (error) {
         info.textContent = "";
@@ -207,64 +208,91 @@ function cambiarDePlan() {
         if (mapaPreview) setTimeout(() => mapaPreview.invalidateSize(), 100);
 }
 
+const RADIO_CERCA_KM = 25;
+let refTransporte = {}; // id_servicio -> {dDest, dOri}
+
+function distKm(lat1, lon1, lat2, lon2) {
+    if ([lat1, lon1, lat2, lon2].some(v => v === null || v === undefined || isNaN(v))) return null;
+    const R = 6371, toR = d => d * Math.PI / 180;
+    const a = Math.sin(toR(lat2 - lat1) / 2) ** 2 +
+              Math.cos(toR(lat1)) * Math.cos(toR(lat2)) * Math.sin(toR(lon2 - lon1) / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+const distUbis = (a, b) => (a && b) ? distKm(parseFloat(a.latitud), parseFloat(a.longitud), parseFloat(b.latitud), parseFloat(b.longitud)) : null;
+
+// Devuelve {cerca, km}
+function evaluarCercania(s) {
+    const ubiDestino = ubicacionesList.find(u => u.id_ubi == planActual.id_ubicacion_destino);
+    const ubiOrigen = ubicacionesList.find(u => u.id_ubi == planActual.id_ubicacion_origen);
+
+    if (tipoServicioActual === "TRANSPORTE") {
+        const r = refTransporte[s.id_servicio];
+        if (!r || r.dDest === null) return { cerca: false, km: null };
+        // Debe llegar cerca del destino y salir razonablemente cerca del origen (aeropuertos/terminales)
+        const origenOk = r.dOri === null || r.dOri <= 80;
+        return { cerca: r.dDest <= 30 && origenOk, km: r.dDest };
+    }
+    const km = distUbis(ubiDestino, s.ubicacion);
+    return { cerca: km !== null && km <= RADIO_CERCA_KM, km };
+}
+
 async function cargarCategoria() {
     tipoServicioActual = document.getElementById("tipoServicio").value;
     const gTarjetas = document.getElementById("grupoTarjetas");
     const gCarro = document.getElementById("grupoCarroPropio");
 
     if (!tipoServicioActual) { gTarjetas.style.display = "none"; gCarro.style.display = "none"; return; }
-
     if (tipoServicioActual === "TRANSPORTE_PROPIO") {
         gTarjetas.style.display = "none"; gCarro.style.display = "block";
         actualizarMapaEnVivo();
         return;
     }
-
     gTarjetas.style.display = "block"; gCarro.style.display = "none";
-    
+
     const mapTipo = { "HOSPEDAJE": 1, "GASTRONOMIA": 2, "DESTINO_TURISTICO": 3, "TRANSPORTE": 4, "GUIA": 5 };
     serviciosFiltradosMemoria = todosLosServicios.filter(s => s.id_tp_serv === mapTipo[tipoServicioActual]);
 
-    // Filtrar vuelos y buses hacia la ciudad de destino
     if (tipoServicioActual === "TRANSPORTE") {
+        refTransporte = {};
         try {
             const res = await fetch(`${API_URL}/servicios/transporte/`);
             const transportes = await res.json();
-            const destinoPlan = ubicacionesList.find(u => u.id_ubi == planActual.id_ubicacion_destino);
-            
-            if (destinoPlan) {
-                serviciosFiltradosMemoria = serviciosFiltradosMemoria.filter(s => {
-                    const tr = transportes.find(t => t.servicio_base.id_servicio === s.id_servicio);
-                    if (!tr || !tr.detalle.id_destino) return false;
-                    const destTrans = ubicacionesList.find(u => u.id_ubi == tr.detalle.id_destino);
-                    return destTrans && destTrans.id_cdad === destinoPlan.id_cdad; 
-                });
-            }
-        } catch (e) { console.error("Error filtrando transporte", e); }
+            const ubiDestino = ubicacionesList.find(u => u.id_ubi == planActual.id_ubicacion_destino);
+            const ubiOrigen = ubicacionesList.find(u => u.id_ubi == planActual.id_ubicacion_origen);
+            transportes.forEach(t => {
+                const d = t.detalle;
+                const uDes = ubicacionesList.find(u => u.id_ubi == d.id_destino);
+                const uOri = ubicacionesList.find(u => u.id_ubi == d.id_origen);
+                refTransporte[t.servicio_base.id_servicio] = {
+                    dDest: distUbis(ubiDestino, uDes),
+                    dOri: distUbis(ubiOrigen, uOri)
+                };
+            });
+        } catch (e) { console.error("Error evaluando transportes", e); }
     }
-    
     renderizarTarjetas(serviciosFiltradosMemoria);
 }
 
 function renderizarTarjetas(servicios) {
     const cCerca = document.getElementById("cardsCerca"); const cLejos = document.getElementById("cardsLejos");
     cCerca.innerHTML = ""; cLejos.innerHTML = "";
-    const ubiDestino = ubicacionesList.find(u => u.id_ubi == planActual.id_ubicacion_destino);
 
-    servicios.forEach(s => {
-        const img = s.imagen_principal ? (s.imagen_principal.startsWith('http') ? s.imagen_principal : API_URL+s.imagen_principal) : 'https://via.placeholder.com/300x200?text=Servicio';
+    const evaluados = servicios.map(s => ({ s, ...evaluarCercania(s) }))
+        .sort((a, b) => (a.km ?? 1e9) - (b.km ?? 1e9));
+
+    evaluados.forEach(({ s, cerca, km }) => {
+        const img = s.imagen_principal ? (s.imagen_principal.startsWith('http') ? s.imagen_principal : API_URL + s.imagen_principal) : 'https://via.placeholder.com/300x200?text=Servicio';
+        const distTxt = km !== null ? ` · a ${km < 1 ? Math.round(km * 1000) + " m" : km.toFixed(1) + " km"}` : "";
         const html = `
             <div class="tarjeta-servicio" onclick="abrirModal(${s.id_servicio})">
                 <img src="${img}">
                 <h4 style="color:#0f172a; margin-bottom:4px; font-size:15px;">${s.nombre}</h4>
-                <p style="color:#64748b; font-size:12px;">📍 ${s.ubicacion ? s.ubicacion.direccion : 'Ubicación no registrada'}</p>
+                <p style="color:#64748b; font-size:12px;">📍 ${s.ubicacion ? s.ubicacion.direccion : 'Ubicación no registrada'}${distTxt}</p>
             </div>`;
-        
-        if (ubiDestino && s.ubicacion && s.ubicacion.id_cdad === ubiDestino.id_cdad) cCerca.innerHTML += html;
-        else cLejos.innerHTML += html;
+        (cerca ? cCerca : cLejos).innerHTML += html;
     });
 
-    if (cCerca.innerHTML === "") cCerca.innerHTML = "<p style='color:#64748b; font-size: 13px;'>No hay servicios registrados en tu ciudad de destino.</p>";
+    if (cCerca.innerHTML === "") cCerca.innerHTML = "<p style='color:#64748b; font-size: 13px;'>No hay servicios cerca de tu destino.</p>";
     if (cLejos.innerHTML === "") cLejos.innerHTML = "<p style='color:#64748b; font-size: 13px;'>No se encontraron más servicios.</p>";
 }
 
@@ -394,3 +422,31 @@ async function enviarItem(payload) {
 
 function finalizarPlan() { window.location.href = "ver_planes.html"; }
 function cerrarSesion() { localStorage.clear(); window.location.href = "../login.html"; }
+
+function actualizarInfoBusqueda() {
+    document.getElementById("infoBusqueda").innerHTML =
+        `📍 <b>Origen:</b> ${origenResuelto.lugar.descripcion}<br>🏁 <b>Destino:</b> ${destinoResuelto.lugar.descripcion}`;
+}
+
+function mostrarAlternativas() {
+    let html = "";
+    [["origen", origenResuelto], ["destino", destinoResuelto]].forEach(([tipo, r]) => {
+        const alts = (r && r.lugar.alternativas) || [];
+        if (!alts.length) return;
+        html += `<div style="margin-top:8px"><b>¿No es ese ${tipo}? Otras coincidencias:</b>` +
+            alts.map((a, i) => `<div><a href="#" onclick="elegirAlternativa('${tipo}',${i});return false;">${a.descripcion}</a></div>`).join("") + `</div>`;
+    });
+    document.getElementById("alternativasBusqueda").innerHTML = html;
+}
+
+function elegirAlternativa(tipo, i) {
+    const r = tipo === "origen" ? origenResuelto : destinoResuelto;
+    const alts = r.lugar.alternativas;
+    const nueva = alts[i];
+    const resto = [r.lugar, ...alts.filter((_, j) => j !== i)].map(x => ({ ...x, alternativas: [] }));
+    nueva.alternativas = resto;
+    r.lugar = nueva;
+    dibujarPreview(origenResuelto.lugar, destinoResuelto.lugar);
+    actualizarInfoBusqueda();
+    mostrarAlternativas();
+}
