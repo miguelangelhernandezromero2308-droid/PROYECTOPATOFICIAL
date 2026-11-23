@@ -8,12 +8,15 @@ from app.layers.models.ubicacion import Ubicacion
 from app.layers.models.servicio import ServicioHospedaje
 from app.layers.models.servicio_gastronomia import ServicioGastronomia
 from app.layers.models.servicio_transporte import ServicioTransporte
+from datetime import date
 from app.layers.models.servicio_recreacion import ServicioRecreacion
 from app.core.travel import calcular_distancia_km, calcular_tiempo
 
 class PlanViajeService:
     @staticmethod
     def crear_plan(db: Session, data: PlanViajeCreate, usuario: User):
+        if data.fecha_inicio < date.today():
+            raise HTTPException(400, "La fecha de inicio no puede ser una fecha que ya pasó. Elige una fecha de hoy en adelante.")
         if data.fecha_inicio > data.fecha_fin:
             raise HTTPException(400, "La fecha de inicio no puede ser posterior a la fecha de fin.")
         nuevo_plan = PlanViaje(
@@ -36,12 +39,12 @@ class PlanViajeService:
         es_transporte = data.tipo_item in ("TRANSPORTE", "TRANSPORTE_PROPIO")
 
         if es_transporte:
-            tiene_transporte = PlanViajeRepository.usuario_ya_tiene_transporte(db, usuario.id_usu)
+            tiene_transporte = PlanViajeRepository.plan_ya_tiene_transporte(db, id_plan)
             if tiene_transporte:
                 raise HTTPException(
                     400,
-                    "Ya tienes un transporte registrado en tus planes de viaje. "
-                    "Solo puedes tener un transporte activo. Elimínalo si deseas agregar otro."
+                    "Este plan de viaje ya tiene un transporte registrado. "
+                    "Solo puedes tener un transporte por plan. Elimínalo si deseas agregar otro."
                 )
 
         costo_unitario = Decimal("0.00")

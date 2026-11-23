@@ -8,6 +8,10 @@ let mapaCrearPlanInstance = null;
 let controlRuta = null; 
 let serviciosFiltradosMemoria = [];
 let servicioSeleccionadoModal = null;
+let mapaPreview = null;
+let marcadoresPreview = [];
+let origenResuelto = null;
+let destinoResuelto = null;
 
 document.addEventListener("DOMContentLoaded", async () => {
     if (!token) { window.location.href = "../login.html"; return; }
@@ -21,6 +25,15 @@ document.addEventListener("DOMContentLoaded", async () => {
         await cargarPlanExistente(planId);
     }
 
+    const hoy = fechaHoyLocal();
+    const inputInicio = document.getElementById("fechaInicio");
+    const inputFin = document.getElementById("fechaFin");
+    inputInicio.min = hoy;
+    inputFin.min = hoy;
+    inputInicio.addEventListener("change", () => {
+        inputFin.min = inputInicio.value || hoy;
+    });
+
     document.getElementById("crearPlanForm").addEventListener("submit", crearPlanBase);
     document.getElementById("formAgregarItem").addEventListener("submit", procesarFormularioItem);
 });
@@ -28,9 +41,13 @@ document.addEventListener("DOMContentLoaded", async () => {
 async function cargarUbicaciones() {
     const res = await fetch(`${API_URL}/ubicaciones/`);
     ubicacionesList = res.ok ? await res.json() : [];
-    const opts = `<option value="">-- Selecciona --</option>` + ubicacionesList.map(u => `<option value="${u.id_ubi}">${u.direccion} (${u.ciudad || u.barrio || ''})</option>`).join("");
-    document.getElementById("origenPlan").innerHTML = opts;
-    document.getElementById("destinoPlan").innerHTML = opts;
+}
+
+function fechaHoyLocal() {
+    const d = new Date();
+    const mes = String(d.getMonth() + 1).padStart(2, "0");
+    const dia = String(d.getDate()).padStart(2, "0");
+    return `${d.getFullYear()}-${mes}-${dia}`;
 }
 
 async function cargarCatalogoCompleto() {
@@ -55,24 +72,122 @@ async function cargarPlanExistente(id_plan) {
 
 async function crearPlanBase(e) {
     e.preventDefault();
-    const payload = {
-        nombre_plan: document.getElementById("nombrePlan").value,
-        fecha_inicio: document.getElementById("fechaInicio").value,
-        fecha_fin: document.getElementById("fechaFin").value,
-        id_ubicacion_origen: parseInt(document.getElementById("origenPlan").value),
-        id_ubicacion_destino: parseInt(document.getElementById("destinoPlan").value)
-    };
-    
+
+    const fInicio = document.getElementById("fechaInicio").value;
+    const fFin = document.getElementById("fechaFin").value;
+    if (fInicio < fechaHoyLocal()) {
+        alert("La fecha de inicio no puede ser una fecha que ya pasó. Elige una fecha de hoy en adelante.");
+        return;
+    }
+    if (fFin < fInicio) {
+        alert("La fecha de fin no puede ser anterior a la fecha de inicio.");
+        return;
+    }
+
+    const tOrigen = document.getElementById("origenTexto").value.trim();
+    const tDestino = document.getElementById("destinoTexto").value.trim();
+
+    // Si el usuario cambió el texto (o no buscó), se busca de nuevo
+    if (!origenResuelto || origenResuelto.texto !== tOrigen || !destinoResuelto || destinoResuelto.texto !== tDestino) {
+        const ok = await buscarEnMapa();
+        if (!ok) return;
+    }
+
     try {
+        const idOrigen = await guardarUbicacion(origenResuelto.lugar);
+        const idDestino = await guardarUbicacion(destinoResuelto.lugar);
+
+        const payload = {
+            nombre_plan: document.getElementById("nombrePlan").value,
+            fecha_inicio: document.getElementById("fechaInicio").value,
+            fecha_fin: document.getElementById("fechaFin").value,
+            id_ubicacion_origen: idOrigen,
+            id_ubicacion_destino: idDestino
+        };
+
         const res = await fetch(`${API_URL}/planes-viaje/`, {
             method: "POST", headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` }, body: JSON.stringify(payload)
         });
         const data = await res.json();
-        
+
         if (res.ok) {
+            await cargarUbicaciones(); // para que el mapa encuentre las ubicaciones nuevas
             await cargarPlanExistente(data.id_plan_viaje);
         } else alert(data.detail);
-    } catch (error) { console.error(error); alert("Error de conexión"); }
+    } catch (error) { console.error(error); alert(error.message || "Error de conexión"); }
+}
+
+async function geocodificar(texto) {
+    const res = await fetch(`${API_URL}/ubicaciones/buscar?texto=${encodeURIComponent(texto)}`, {
+        headers: { "Authorization": `Bearer ${token}` }
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "No se pudo buscar el lugar.");
+    return data;
+}
+
+async function guardarUbicacion(lugar) {
+    const res = await fetch(`${API_URL}/ubicaciones/desde-mapa`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({
+            direccion: lugar.direccion,
+            barrio: lugar.barrio,
+            latitud: lugar.latitud,
+            longitud: lugar.longitud,
+            descripcion: lugar.descripcion,
+            id_cdad: lugar.id_cdad
+        })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || "No se pudo guardar la ubicación.");
+    return data.id_ubi;
+}
+
+async function buscarEnMapa() {
+    const tOrigen = document.getElementById("origenTexto").value.trim();
+    const tDestino = document.getElementById("destinoTexto").value.trim();
+    const info = document.getElementById("infoBusqueda");
+
+    if (!tOrigen || !tDestino) {
+        alert("Escribe el origen y el destino.");
+        return false;
+    }
+
+    info.textContent = "⏳ Buscando ubicaciones...";
+    try {
+        const lugarOrigen = await geocodificar(tOrigen);
+        const lugarDestino = await geocodificar(tDestino);
+
+        origenResuelto = { texto: tOrigen, lugar: lugarOrigen };
+        destinoResuelto = { texto: tDestino, lugar: lugarDestino };
+
+        dibujarPreview(lugarOrigen, lugarDestino);
+        info.innerHTML = `📍 <b>Origen:</b> ${lugarOrigen.descripcion}<br>🏁 <b>Destino:</b> ${lugarDestino.descripcion}`;
+        return true;
+    } catch (error) {
+        info.textContent = "";
+        alert(error.message);
+        return false;
+    }
+}
+
+function dibujarPreview(origen, destino) {
+    if (!mapaPreview) {
+        mapaPreview = L.map("mapaPreview").setView([4.6534, -74.1162], 6);
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(mapaPreview);
+    }
+    marcadoresPreview.forEach(m => mapaPreview.removeLayer(m));
+    marcadoresPreview = [];
+
+    const mOri = L.marker([origen.latitud, origen.longitud]).addTo(mapaPreview).bindPopup("Origen: " + origen.direccion);
+    const mDes = L.marker([destino.latitud, destino.longitud]).addTo(mapaPreview).bindPopup("Destino: " + destino.direccion);
+    marcadoresPreview.push(mOri, mDes);
+
+    mapaPreview.fitBounds(
+        L.latLngBounds([[origen.latitud, origen.longitud], [destino.latitud, destino.longitud]]),
+        { padding: [30, 30] }
+    );
 }
 
 function renderizarResumen() {
@@ -89,6 +204,7 @@ function cambiarDePlan() {
     document.getElementById("seccionItems").style.display = "none";
     window.history.replaceState(null, '', 'crear_plan.html'); // Limpia la URL
     document.getElementById("crearPlanForm").reset();
+        if (mapaPreview) setTimeout(() => mapaPreview.invalidateSize(), 100);
 }
 
 async function cargarCategoria() {

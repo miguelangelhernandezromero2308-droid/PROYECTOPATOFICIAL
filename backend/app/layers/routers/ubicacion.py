@@ -2,8 +2,10 @@ from typing import List
 from fastapi import APIRouter, Depends
 from sqlmodel import Session
 from app.db.session import get_session
+from app.core.security import get_current_user
+from app.layers.models.auth import User
 from app.layers.business.ubicacion_service import UbicacionService
-from app.layers.models.ubicacion import UbicacionCreate, UbicacionUpdate, UbicacionResponse
+from app.layers.models.ubicacion import UbicacionCreate, UbicacionUpdate, UbicacionResponse, UbicacionLibreCreate
 
 router = APIRouter(prefix="/ubicaciones", tags=["Ubicaciones Geográficas"])
 
@@ -22,3 +24,11 @@ def actualizar_ubicacion(id_ubi: int, data: UbicacionUpdate, db: Session = Depen
 @router.delete("/{id_ubi}")
 def eliminar_ubicacion(id_ubi: int, db: Session = Depends(get_session)):
     return UbicacionService.eliminar_ubicacion(db, id_ubi)
+
+@router.get("/buscar")
+def buscar_lugar(texto: str, db: Session = Depends(get_session), usuario: User = Depends(get_current_user)):
+    return UbicacionService.buscar_lugar(db, texto)
+
+@router.post("/desde-mapa", response_model=UbicacionResponse, status_code=201)
+def crear_ubicacion_libre(data: UbicacionLibreCreate, db: Session = Depends(get_session), usuario: User = Depends(get_current_user)):
+    return UbicacionService.crear_ubicacion_libre(db, data)

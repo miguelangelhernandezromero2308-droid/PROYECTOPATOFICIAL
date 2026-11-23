@@ -73,3 +73,46 @@ def obtener_coordenadas_exactas(
         )
 
         return None, None
+
+def buscar_lugar(texto: str) -> Optional[dict]:
+    """
+    Busca un lugar escrito por el usuario (dirección o sitio de referencia)
+    y devuelve sus coordenadas. Solo busca dentro de Colombia.
+    """
+    try:
+        location = geolocator.geocode(
+            texto,
+            addressdetails=True,
+            country_codes="co",
+            language="es",
+            timeout=10
+        )
+    except Exception as e:
+        print(f"Error buscando lugar: {e}")
+        return None
+
+    if not location:
+        return None
+
+    address = location.raw.get("address", {})
+
+    ciudad = (
+        address.get("city")
+        or address.get("town")
+        or address.get("village")
+        or address.get("municipality")
+        or address.get("county")
+    )
+
+    barrio = (
+        address.get("neighbourhood")
+        or address.get("suburb")
+    )
+
+    return {
+        "latitud": round(location.latitude, 8),
+        "longitud": round(location.longitude, 8),
+        "nombre_mapa": location.address,
+        "ciudad": ciudad,
+        "barrio": barrio
+    }
