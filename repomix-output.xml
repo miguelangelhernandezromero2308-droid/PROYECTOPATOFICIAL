@@ -165,7 +165,10 @@ backend/
     static/
       documentos/
         user_2_Diagrama_Despliegue.png
+        user_23_PAT_21_09_2026.png
       servicios/
+        srv_180_e3456606.jpg
+        srv_180_f8cabc76.jpg
         srv_3_monserrate.jpg
     main.py
   Evidencias-Pruebas/
@@ -179,12 +182,41 @@ backend/
     test_CP_04_01.png
     test_CP_04_02.png
     test_CP_04_03.png
+    test_CP_06_02.png
+    test_CP_14_02.png
+    test_CP_17_01.png
+    test_CP_17_02.png
+    test_CP_19_01.png
+    test_CP_19_02.png
+    test_CP_20_01.png
+    test_CP_20_03.png
+    test_CP_21_01.png
+    test_CP_21_02.png
+    test_CP_21_03.png
+    test_CP_22_01.png
+    test_CP_22_02.png
+    test_CP_23_01.png
+    test_CP_23_02.png
+    test_CP_24_01.png
+    test_CP_24_02.png
+    test_CP_32_01.png
+    test_CP_32_02.png
+    test_CP_32_03.png
+    test_CP_35_01.png
+    test_CP_35_02.png
+    test_CP_35_03.png
+    test_CP_36_02.png
+    test_CP_RNF_01.png
+    test_CP_RNF_02_P1.png
+    test_CP_RNF_02_P2.png
+    test_CP_RNF_03.png
   tests/
     conftest.py
     locustfile.py
     test_pat.py
   crear_usuarios_prueba.py
   requirements.txt
+  test_pat.db
 frontend/
   css/
     pagos.css
@@ -357,6 +389,8 @@ def get_current_user(
 from geopy.geocoders import Nominatim
 from typing import Tuple, Optional
 import time
+import re
+import unicodedata
 
 geolocator = Nominatim(user_agent="pat_turismo_app")
 
@@ -430,48 +464,72 @@ def obtener_coordenadas_exactas(
 
         return None, None
 
-def buscar_lugar(texto: str) -> Optional[dict]:
-    """
-    Busca un lugar escrito por el usuario (dirección o sitio de referencia)
-    y devuelve sus coordenadas. Solo busca dentro de Colombia.
-    """
-    try:
-        location = geolocator.geocode(
-            texto,
-            addressdetails=True,
-            country_codes="co",
-            language="es",
-            timeout=10
-        )
-    except Exception as e:
-        print(f"Error buscando lugar: {e}")
-        return None
+import re
+import unicodedata
 
-    if not location:
-        return None
+def _norm(t: str) -> str:
+    sin = unicodedata.normalize("NFD", t or "").encode("ascii", "ignore").decode()
+    return sin.lower().strip()
 
-    address = location.raw.get("address", {})
+def _variantes(texto: str):
+    t = " ".join((texto or "").split())
+    variantes = [t]
+    # "Carrera 7 # 28-66" -> "Carrera 7 28-66" (Nominatim se confunde con el #)
+    sin_signo = re.sub(r"\s*(#|n[o°º]\.?|nro\.?)\s*(?=\d)", " ", t, flags=re.I)
+    sin_signo = " ".join(sin_signo.split())
+    if sin_signo.lower() != t.lower():
+        variantes.append(sin_signo)
+    return variantes
 
-    ciudad = (
-        address.get("city")
-        or address.get("town")
-        or address.get("village")
-        or address.get("municipality")
-        or address.get("county")
-    )
-
-    barrio = (
-        address.get("neighbourhood")
-        or address.get("suburb")
-    )
-
+def _a_lugar(loc) -> dict:
+    address = loc.raw.get("address", {})
+    ciudades = [address.get(k) for k in
+                ("city", "town", "village", "municipality", "county", "state_district", "state")
+                if address.get(k)]
+    barrio = address.get("neighbourhood") or address.get("suburb") or address.get("quarter")
     return {
-        "latitud": round(location.latitude, 8),
-        "longitud": round(location.longitude, 8),
-        "nombre_mapa": location.address,
-        "ciudad": ciudad,
-        "barrio": barrio
+        "latitud": round(loc.latitude, 8),
+        "longitud": round(loc.longitude, 8),
+        "nombre_mapa": loc.address,
+        "ciudad": ciudades[0] if ciudades else None,
+        "ciudades": ciudades,
+        "barrio": barrio,
     }
+
+def buscar_lugar(texto: str) -> Optional[dict]:
+    """Devuelve el mejor resultado + 'alternativas' (hasta 4 más)."""
+    resultados, vistos = [], set()
+    for consulta in _variantes(texto):
+        try:
+            encontrados = geolocator.geocode(
+                consulta, addressdetails=True, country_codes="co",
+                language="es", timeout=10, exactly_one=False, limit=5
+            )
+        except Exception as e:
+            print(f"Error buscando lugar: {e}")
+            encontrados = None
+        for loc in encontrados or []:
+            clave = (round(loc.latitude, 4), round(loc.longitude, 4))
+            if clave not in vistos:
+                vistos.add(clave)
+                resultados.append(loc)
+        if resultados:
+            break
+        time.sleep(1)
+
+    if not resultados:
+        return None
+
+    # Si el texto trae ciudad ("..., Bogotá"), esos resultados van primero
+    partes = [p.strip() for p in texto.split(",") if p.strip()]
+    if len(partes) > 1:
+        pista = _norm(partes[-1])
+        resultados.sort(key=lambda l: 0 if pista in _norm(l.address) else 1)
+
+    lugares = [_a_lugar(l) for l in resultados]
+    principal = lugares[0]
+    principal["alternativas"] = lugares[1:]
+    return principal
 </file>
 
 <file path="backend/app/core/security.py">
@@ -2903,7 +2961,7 @@ class ServicioTransporteService:
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
-
+from sqlmodel import Session, select
 from app.layers.data.solicitud_proveedor_repository import SolicitudProveedorRepository
 from app.layers.data.proveedor_repository import ProveedorRepository
 from app.layers.data.user_repository import UserRepository
@@ -2988,55 +3046,46 @@ class SolicitudProveedorService:
     @staticmethod
     def revisar_solicitud(db: Session, id_sp: int, data: SolicitudRevision):
         solicitud = SolicitudProveedorRepository.obtener_por_id(db, id_sp)
-
         if not solicitud:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Solicitud no encontrada.")
-        if solicitud.estado != "EN_REVISION":
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Esta solicitud ya fue procesada.")
+            raise HTTPException(status_code=404, detail="Solicitud no encontrada.")
         if data.estado not in ["APROBADA", "RECHAZADA"]:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="El estado debe ser APROBADA o RECHAZADA.",
-            )
+            raise HTTPException(status_code=400, detail="El estado debe ser APROBADA o RECHAZADA.")
+        if solicitud.estado == data.estado:
+            raise HTTPException(status_code=400, detail=f"La solicitud ya está {data.estado}.")
 
         try:
             solicitud.estado = data.estado
             solicitud.observaciones = data.observaciones
             SolicitudProveedorRepository.actualizar(db, solicitud, commit=False)
 
+            usuario = UserRepository.obtener_por_id(db, solicitud.id_usu)
+            if not usuario:
+                raise HTTPException(status_code=404, detail="Usuario asociado a la solicitud no encontrado.")
+            proveedor = ProveedorRepository.obtener_por_usuario(db, solicitud.id_usu)
+
             if data.estado == "APROBADA":
-                proveedor_existente = ProveedorRepository.obtener_por_usuario(db, solicitud.id_usu)
-                if proveedor_existente:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Este usuario ya está registrado como proveedor.",
+                if proveedor:
+                    proveedor.estado = "ACTIVO"
+                    db.add(proveedor)
+                    db.flush()
+                else:
+                    proveedor = ProveedorRepository.crear(
+                        db, Proveedor(id_usu=solicitud.id_usu, id_sp=solicitud.id_sp, estado="ACTIVO"), commit=False
                     )
-
-                nuevo_proveedor = Proveedor(
-                    id_usu=solicitud.id_usu,
-                    id_sp=solicitud.id_sp,
-                    estado="ACTIVO",
-                )
-                proveedor_guardado = ProveedorRepository.crear(db, nuevo_proveedor, commit=False)
-
-                servicios_pedidos = SolicitudProveedorRepository.obtener_servicios_de_solicitud(
-                    db, solicitud.id_sp
-                )
-                for serv in servicios_pedidos:
-                    ProveedorRepository.agregar_servicio_autorizado(
-                        db,
-                        ProveedorTpServicio(id_prov=proveedor_guardado.id_prov, id_tp_serv=serv.id_tp_serv),
-                        commit=False,
-                    )
-
-                usuario = UserRepository.obtener_por_id(db, solicitud.id_usu)
-                if not usuario:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="Usuario asociado a la solicitud no encontrado.",
-                    )
-                usuario.id_rol = 3  # 3 = Proveedor
-                UserRepository.actualizar(db, usuario, commit=False)
+                ya = {p.id_tp_serv for p in db.exec(
+                    select(ProveedorTpServicio).where(ProveedorTpServicio.id_prov == proveedor.id_prov)).all()}
+                for serv in SolicitudProveedorRepository.obtener_servicios_de_solicitud(db, solicitud.id_sp):
+                    if serv.id_tp_serv not in ya:
+                        ProveedorRepository.agregar_servicio_autorizado(
+                            db, ProveedorTpServicio(id_prov=proveedor.id_prov, id_tp_serv=serv.id_tp_serv), commit=False)
+                usuario.id_rol = 3
+            else:  # RECHAZADA (también revoca una aprobación anterior)
+                if proveedor:
+                    proveedor.estado = "INACTIVO"
+                    db.add(proveedor)
+                if usuario.id_rol == 3:
+                    usuario.id_rol = 1
+            UserRepository.actualizar(db, usuario, commit=False)
 
             db.commit()
         except HTTPException:
@@ -3044,13 +3093,10 @@ class SolicitudProveedorService:
             raise
         except Exception:
             db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Error al procesar la revisión de la solicitud.",
-            )
+            raise HTTPException(status_code=500, detail="Error al procesar la revisión de la solicitud.")
 
         return {"mensaje": f"Solicitud {data.estado} exitosamente."}
-
+    
     @staticmethod
     def listar_todas(db: Session):
         return SolicitudProveedorRepository.obtener_todas(db)
@@ -3197,6 +3243,7 @@ from app.layers.data.ubicacion_repository import UbicacionRepository
 from app.layers.models.ubicacion import Ubicacion, UbicacionCreate, UbicacionUpdate, UbicacionLibreCreate
 from app.layers.models.ciudad import Ciudad
 from app.core.maps import obtener_coordenadas_exactas, buscar_lugar as geocodificar_lugar
+import re
 
 class UbicacionService:
     @staticmethod
@@ -3254,6 +3301,23 @@ class UbicacionService:
         sin_tildes = unicodedata.normalize("NFD", texto or "").encode("ascii", "ignore").decode()
         return sin_tildes.lower().strip()
 
+   
+    @staticmethod
+    def _limpiar_ciudad(texto: str) -> str:
+        n = UbicacionService._normalizar(texto)
+        n = re.sub(r"\b(d\.?\s?c\.?|distrito capital|distrito especial|departamento de)\b", " ", n)
+        n = re.sub(r"[^a-z0-9 ]", " ", n)
+        return " ".join(n.split())
+
+    @staticmethod
+    def _id_ciudad(ciudades_db, candidatas):
+        for cand in candidatas or []:
+            objetivo = UbicacionService._limpiar_ciudad(cand)
+            for c in ciudades_db:
+                if UbicacionService._limpiar_ciudad(c.nombre) == objetivo:
+                    return c.id_cdad
+        return None
+
     @staticmethod
     def buscar_lugar(db: Session, texto: str):
         texto = (texto or "").strip()
@@ -3262,26 +3326,24 @@ class UbicacionService:
 
         lugar = geocodificar_lugar(texto)
         if not lugar:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No se encontró '{texto}' en el mapa. Intenta agregar la ciudad.")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No se encontró '{texto}' en el mapa. Intenta agregar la ciudad o el barrio.")
 
-        # Intentar relacionar con una ciudad que ya exista en la BD
-        id_cdad = None
-        if lugar["ciudad"]:
-            objetivo = UbicacionService._normalizar(lugar["ciudad"])
-            for c in db.exec(select(Ciudad)).all():
-                if UbicacionService._normalizar(c.nombre) == objetivo:
-                    id_cdad = c.id_cdad
-                    break
+        ciudades_db = db.exec(select(Ciudad)).all()
 
-        return {
-            "direccion": texto,
-            "barrio": lugar["barrio"],
-            "latitud": lugar["latitud"],
-            "longitud": lugar["longitud"],
-            "descripcion": lugar["nombre_mapa"],
-            "id_cdad": id_cdad,
-            "ciudad": lugar["ciudad"]
-        }
+        def armar(l):
+            return {
+                "direccion": texto,
+                "barrio": l["barrio"],
+                "latitud": l["latitud"],
+                "longitud": l["longitud"],
+                "descripcion": l["nombre_mapa"],
+                "id_cdad": UbicacionService._id_ciudad(ciudades_db, l.get("ciudades")),  # puede ser None, no importa
+                "ciudad": l["ciudad"],
+            }
+
+        resp = armar(lugar)
+        resp["alternativas"] = [armar(a) for a in lugar.get("alternativas", [])]
+        return resp
 
     @staticmethod
     def crear_ubicacion_libre(db: Session, data: UbicacionLibreCreate):
@@ -3913,6 +3975,8 @@ class ServicioRecreacionRepository:
 from typing import List
 from sqlmodel import Session, select
 from app.layers.models.servicio import Servicio, ServicioHospedaje
+from sqlalchemy import or_
+from app.layers.models.proveedor import Proveedor
 
 class ServicioRepository:
     
@@ -3968,6 +4032,16 @@ class ServicioRepository:
     def obtener_servicios_por_proveedor(db: Session, id_prov: int) -> List[Servicio]:
         return db.exec(
             select(Servicio).where(Servicio.id_prov == id_prov, Servicio.activo == True)
+        ).all()
+
+    @staticmethod
+    def obtener_todos_los_servicios(db: Session) -> List[Servicio]:
+        activos = select(Proveedor.id_prov).where(Proveedor.estado == "ACTIVO")
+        return db.exec(
+            select(Servicio).where(
+                Servicio.activo == True,
+                or_(Servicio.id_prov == None, Servicio.id_prov.in_(activos))
+            )
         ).all()
 </file>
 
@@ -11886,6 +11960,8 @@ function configurarEventosUI() {
 
 async function cargarDashboardCompleto() {
   try {
+    const perfilPrevio = await apiFetch("/proveedores/mi-perfil");
+    if (perfilPrevio.estado !== "ACTIVO") { mostrarCuentaBloqueada(perfilPrevio); return; }
     const [
       perfilRes,
       serviciosRes,
@@ -11925,6 +12001,23 @@ async function cargarDashboardCompleto() {
     console.error("Error cargando dashboard:", error);
     mostrarToast(error.message);
   }
+}
+
+function mostrarCuentaBloqueada(perfil) {
+  const textos = {
+    INACTIVO: "Tu cuenta de proveedor está inactiva.",
+    SUSPENDIDO: "Tu cuenta de proveedor está suspendida."
+  };
+  document.body.innerHTML = `
+    <div style="min-height:100vh;display:grid;place-items:center;background:#f1f5f9;font-family:system-ui,sans-serif;padding:20px;">
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:36px;max-width:440px;text-align:center;box-shadow:0 4px 14px rgba(15,23,42,.08);">
+        <div style="font-size:48px;">🚫</div>
+        <h2 style="margin:10px 0 8px;color:#0f172a;">Cuenta ${perfil.estado.toLowerCase()}</h2>
+        <p style="color:#64748b;margin-bottom:22px;">${textos[perfil.estado] || "Tu cuenta no está habilitada."}
+          Tus servicios no se muestran a los viajeros. Comunícate con el administrador de PAT para reactivarla.</p>
+        <button onclick="cerrarSesion()" style="padding:10px 22px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;font-weight:600;cursor:pointer;">Cerrar sesión</button>
+      </div>
+    </div>`;
 }
 
 function renderizarTodo() {
@@ -12332,16 +12425,28 @@ function actualizarCamposCategoria(detalle = null) {
           <div class="form-group"><label>Capacidad</label><input type="number" id="detCapacidad" value="${detalle?.capacidad || 10}" /></div>
         </div>`;
     } else if (cat === 4) {
-      contUnico.innerHTML = `
-        <div class="form-row">
-          <div class="form-group"><label>Tipo de vehículo</label><input type="text" id="detVehiculo" value="${detalle?.tipo_vehiculo || ""}" required /></div>
-          <div class="form-group"><label>Tarifa base (COP)</label><input type="number" id="detTarifa" value="${detalle?.tarifa_base || 0}" required /></div>
-        </div>
-        <div class="form-row">
-          <div class="form-group"><label>Capacidad pasajeros</label><input type="number" id="detCapacidad" value="${detalle?.capacidad_pasajeros || 4}" required /></div>
-          <div class="form-group"><label>Valor por Km (COP)</label><input type="number" id="detVlrKm" value="${detalle?.vlr_km || 2000}" required /></div>
-        </div>`;
-    } else if (cat === 5) {
+  const uOri = detalle?.id_origen ? catUbicaciones.find(u => u.id_ubi === detalle.id_origen) : null;
+  const uDes = detalle?.id_destino ? catUbicaciones.find(u => u.id_ubi === detalle.id_destino) : null;
+  contUnico.innerHTML = `
+    <div class="form-row">
+      <div class="form-group"><label>Tipo de vehículo</label><input type="text" id="detVehiculo" value="${detalle?.tipo_vehiculo || ""}" required /></div>
+      <div class="form-group"><label>Tarifa base (COP)</label><input type="number" id="detTarifa" value="${detalle?.tarifa_base || 0}" required /></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Capacidad pasajeros</label><input type="number" id="detCapacidad" value="${detalle?.capacidad_pasajeros || 4}" required /></div>
+      <div class="form-group"><label>Valor por Km (COP)</label><input type="number" id="detVlrKm" value="${detalle?.vlr_km || 2000}" required /></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Origen de la ruta</label>
+        <input type="text" id="detOrigen" required placeholder="Ej: Aeropuerto José María Córdova, Rionegro"
+          value="${uOri ? uOri.direccion : ""}" data-id="${uOri ? uOri.id_ubi : ""}" data-texto="${uOri ? uOri.direccion : ""}" /></div>
+      <div class="form-group"><label>Destino de la ruta</label>
+        <input type="text" id="detDestino" required placeholder="Ej: Aeropuerto El Dorado, Bogotá"
+          value="${uDes ? uDes.direccion : ""}" data-id="${uDes ? uDes.id_ubi : ""}" data-texto="${uDes ? uDes.direccion : ""}" /></div>
+    </div>
+    <div class="form-group"><label>Fecha y hora de salida (opcional)</label>
+      <input type="datetime-local" id="detSalida" value="${detalle?.fecha_salida ? detalle.fecha_salida.slice(0, 16) : ""}" /></div>`;
+} else if (cat === 5) {
       contUnico.innerHTML = `
         <div class="form-row">
           <div class="form-group"><label>Nombre del tour</label><input type="text" id="detNombre" value="${detalle?.nombre_tour || ""}" required /></div>
@@ -12353,6 +12458,20 @@ function actualizarCamposCategoria(detalle = null) {
         </div>`;
     }
   }
+}
+
+async function resolverRutaTransporte(idInput) {
+  const el = document.getElementById(idInput);
+  const t = el.value.trim();
+  if (!t) return null;
+  if (el.dataset.id && el.dataset.texto === t) return Number(el.dataset.id); // no cambió
+  const lugar = await apiFetch(`/ubicaciones/buscar?texto=${encodeURIComponent(t)}`);
+  const ubi = await apiFetch("/ubicaciones/desde-mapa", {
+    method: "POST",
+    body: JSON.stringify({ direccion: lugar.direccion, barrio: lugar.barrio, latitud: lugar.latitud,
+      longitud: lugar.longitud, descripcion: lugar.descripcion, id_cdad: lugar.id_cdad })
+  });
+  return ubi.id_ubi;
 }
 
 function abrirModalServicio(idServicio = null) {
@@ -12445,14 +12564,17 @@ function renderizarGaleriaModal(s) {
 // ======================================================
 async function buscarUbicacionServicio(texto) {
   const lugar = await apiFetch(`/ubicaciones/buscar?texto=${encodeURIComponent(texto)}`);
+  alternativasServicio = lugar.alternativas || [];
   ubicacionServicio = { texto, lugar, id_ubi: null };
+  pintarAlternativasServicio();
   return lugar;
 }
 
+let alternativasServicio = [];
+
 function dibujarMapaServicio(lat, lng, etiqueta) {
-  if (typeof L === "undefined") return; // Leaflet no cargó (sin internet)
-  const cont = document.getElementById("mapaServicio");
-  cont.style.display = "block";
+  if (typeof L === "undefined") return;
+  document.getElementById("mapaServicio").style.display = "block";
 
   if (!mapaServicio) {
     mapaServicio = L.map("mapaServicio").setView([lat, lng], 16);
@@ -12460,9 +12582,44 @@ function dibujarMapaServicio(lat, lng, etiqueta) {
   }
   if (marcadorServicio) mapaServicio.removeLayer(marcadorServicio);
 
-  marcadorServicio = L.marker([lat, lng]).addTo(mapaServicio).bindPopup(etiqueta).openPopup();
+  marcadorServicio = L.marker([lat, lng], { draggable: true }).addTo(mapaServicio)
+    .bindPopup(etiqueta + "<br><small>Arrastra el pin para ajustar</small>").openPopup();
+  marcadorServicio.on("dragend", () => {
+    const p = marcadorServicio.getLatLng();
+    const texto = document.getElementById("srvUbicacionTexto").value.trim();
+    const base = (ubicacionServicio && ubicacionServicio.lugar) ||
+                 { direccion: texto, barrio: null, id_cdad: null };
+    ubicacionServicio = {
+      texto,
+      lugar: { ...base, direccion: texto, latitud: +p.lat.toFixed(8), longitud: +p.lng.toFixed(8),
+               descripcion: "Ubicación ajustada manualmente en el mapa" },
+      id_ubi: null
+    };
+    document.getElementById("infoUbicacionServicio").textContent = "📍 Ubicación ajustada manualmente.";
+  });
   mapaServicio.setView([lat, lng], 16);
   setTimeout(() => mapaServicio.invalidateSize(), 100);
+}
+
+function pintarAlternativasServicio() {
+  const cont = document.getElementById("alternativasServicio");
+  if (!cont) return;
+  cont.innerHTML = alternativasServicio.length
+    ? "<b>¿No es ese lugar? Otras coincidencias:</b>" +
+      alternativasServicio.map((a, i) =>
+        `<div><a href="#" onclick="elegirAlternativaServicio(${i});return false;">${a.descripcion}</a></div>`).join("")
+    : "";
+}
+
+function elegirAlternativaServicio(i) {
+  const a = alternativasServicio[i];
+  const texto = document.getElementById("srvUbicacionTexto").value.trim();
+  alternativasServicio = [ubicacionServicio.lugar, ...alternativasServicio.filter((_, j) => j !== i)]
+    .filter(Boolean);
+  ubicacionServicio = { texto, lugar: { ...a, direccion: texto }, id_ubi: null };
+  document.getElementById("infoUbicacionServicio").textContent = `📍 Seleccionado: ${a.descripcion}`;
+  dibujarMapaServicio(a.latitud, a.longitud, texto);
+  pintarAlternativasServicio();
 }
 
 async function verUbicacionEnMapa() {
@@ -12558,12 +12715,19 @@ async function guardarServicioAPI(e) {
       const res = await apiFetch(url, { method: idExistente ? "PUT" : "POST", body: JSON.stringify(payload) });
       if (!idServicioFinal) idServicioFinal = res.id_servicio;
     } else if (cat === 4) {
+      const idOrigen = await resolverRutaTransporte("detOrigen");
+      const idDestino = await resolverRutaTransporte("detDestino");
+      const salida = document.getElementById("detSalida").value;
       const payload = {
         ...basePayload,
         tipo_vehiculo: document.getElementById("detVehiculo").value.trim(),
         tarifa_base: Number(document.getElementById("detTarifa").value),
         capacidad_pasajeros: Number(document.getElementById("detCapacidad").value),
-        vlr_km: Number(document.getElementById("detVlrKm").value)
+        vlr_km: Number(document.getElementById("detVlrKm").value),
+        es_ruta_programada: !!(idOrigen && idDestino),
+        id_origen: idOrigen,
+        id_destino: idDestino,
+        fecha_salida: salida || null
       };
       const url = idExistente ? `/servicios/transporte/${idExistente}` : "/servicios/transporte/";
       const res = await apiFetch(url, { method: idExistente ? "PUT" : "POST", body: JSON.stringify(payload) });
@@ -13400,7 +13564,8 @@ async function buscarEnMapa() {
         destinoResuelto = { texto: tDestino, lugar: lugarDestino };
 
         dibujarPreview(lugarOrigen, lugarDestino);
-        info.innerHTML = `📍 <b>Origen:</b> ${lugarOrigen.descripcion}<br>🏁 <b>Destino:</b> ${lugarDestino.descripcion}`;
+        actualizarInfoBusqueda();
+        mostrarAlternativas();
         return true;
     } catch (error) {
         info.textContent = "";
@@ -13444,64 +13609,91 @@ function cambiarDePlan() {
         if (mapaPreview) setTimeout(() => mapaPreview.invalidateSize(), 100);
 }
 
+const RADIO_CERCA_KM = 25;
+let refTransporte = {}; // id_servicio -> {dDest, dOri}
+
+function distKm(lat1, lon1, lat2, lon2) {
+    if ([lat1, lon1, lat2, lon2].some(v => v === null || v === undefined || isNaN(v))) return null;
+    const R = 6371, toR = d => d * Math.PI / 180;
+    const a = Math.sin(toR(lat2 - lat1) / 2) ** 2 +
+              Math.cos(toR(lat1)) * Math.cos(toR(lat2)) * Math.sin(toR(lon2 - lon1) / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+const distUbis = (a, b) => (a && b) ? distKm(parseFloat(a.latitud), parseFloat(a.longitud), parseFloat(b.latitud), parseFloat(b.longitud)) : null;
+
+// Devuelve {cerca, km}
+function evaluarCercania(s) {
+    const ubiDestino = ubicacionesList.find(u => u.id_ubi == planActual.id_ubicacion_destino);
+    const ubiOrigen = ubicacionesList.find(u => u.id_ubi == planActual.id_ubicacion_origen);
+
+    if (tipoServicioActual === "TRANSPORTE") {
+        const r = refTransporte[s.id_servicio];
+        if (!r || r.dDest === null) return { cerca: false, km: null };
+        // Debe llegar cerca del destino y salir razonablemente cerca del origen (aeropuertos/terminales)
+        const origenOk = r.dOri === null || r.dOri <= 80;
+        return { cerca: r.dDest <= 30 && origenOk, km: r.dDest };
+    }
+    const km = distUbis(ubiDestino, s.ubicacion);
+    return { cerca: km !== null && km <= RADIO_CERCA_KM, km };
+}
+
 async function cargarCategoria() {
     tipoServicioActual = document.getElementById("tipoServicio").value;
     const gTarjetas = document.getElementById("grupoTarjetas");
     const gCarro = document.getElementById("grupoCarroPropio");
 
     if (!tipoServicioActual) { gTarjetas.style.display = "none"; gCarro.style.display = "none"; return; }
-
     if (tipoServicioActual === "TRANSPORTE_PROPIO") {
         gTarjetas.style.display = "none"; gCarro.style.display = "block";
         actualizarMapaEnVivo();
         return;
     }
-
     gTarjetas.style.display = "block"; gCarro.style.display = "none";
-    
+
     const mapTipo = { "HOSPEDAJE": 1, "GASTRONOMIA": 2, "DESTINO_TURISTICO": 3, "TRANSPORTE": 4, "GUIA": 5 };
     serviciosFiltradosMemoria = todosLosServicios.filter(s => s.id_tp_serv === mapTipo[tipoServicioActual]);
 
-    // Filtrar vuelos y buses hacia la ciudad de destino
     if (tipoServicioActual === "TRANSPORTE") {
+        refTransporte = {};
         try {
             const res = await fetch(`${API_URL}/servicios/transporte/`);
             const transportes = await res.json();
-            const destinoPlan = ubicacionesList.find(u => u.id_ubi == planActual.id_ubicacion_destino);
-            
-            if (destinoPlan) {
-                serviciosFiltradosMemoria = serviciosFiltradosMemoria.filter(s => {
-                    const tr = transportes.find(t => t.servicio_base.id_servicio === s.id_servicio);
-                    if (!tr || !tr.detalle.id_destino) return false;
-                    const destTrans = ubicacionesList.find(u => u.id_ubi == tr.detalle.id_destino);
-                    return destTrans && destTrans.id_cdad === destinoPlan.id_cdad; 
-                });
-            }
-        } catch (e) { console.error("Error filtrando transporte", e); }
+            const ubiDestino = ubicacionesList.find(u => u.id_ubi == planActual.id_ubicacion_destino);
+            const ubiOrigen = ubicacionesList.find(u => u.id_ubi == planActual.id_ubicacion_origen);
+            transportes.forEach(t => {
+                const d = t.detalle;
+                const uDes = ubicacionesList.find(u => u.id_ubi == d.id_destino);
+                const uOri = ubicacionesList.find(u => u.id_ubi == d.id_origen);
+                refTransporte[t.servicio_base.id_servicio] = {
+                    dDest: distUbis(ubiDestino, uDes),
+                    dOri: distUbis(ubiOrigen, uOri)
+                };
+            });
+        } catch (e) { console.error("Error evaluando transportes", e); }
     }
-    
     renderizarTarjetas(serviciosFiltradosMemoria);
 }
 
 function renderizarTarjetas(servicios) {
     const cCerca = document.getElementById("cardsCerca"); const cLejos = document.getElementById("cardsLejos");
     cCerca.innerHTML = ""; cLejos.innerHTML = "";
-    const ubiDestino = ubicacionesList.find(u => u.id_ubi == planActual.id_ubicacion_destino);
 
-    servicios.forEach(s => {
-        const img = s.imagen_principal ? (s.imagen_principal.startsWith('http') ? s.imagen_principal : API_URL+s.imagen_principal) : 'https://via.placeholder.com/300x200?text=Servicio';
+    const evaluados = servicios.map(s => ({ s, ...evaluarCercania(s) }))
+        .sort((a, b) => (a.km ?? 1e9) - (b.km ?? 1e9));
+
+    evaluados.forEach(({ s, cerca, km }) => {
+        const img = s.imagen_principal ? (s.imagen_principal.startsWith('http') ? s.imagen_principal : API_URL + s.imagen_principal) : 'https://via.placeholder.com/300x200?text=Servicio';
+        const distTxt = km !== null ? ` · a ${km < 1 ? Math.round(km * 1000) + " m" : km.toFixed(1) + " km"}` : "";
         const html = `
             <div class="tarjeta-servicio" onclick="abrirModal(${s.id_servicio})">
                 <img src="${img}">
                 <h4 style="color:#0f172a; margin-bottom:4px; font-size:15px;">${s.nombre}</h4>
-                <p style="color:#64748b; font-size:12px;">📍 ${s.ubicacion ? s.ubicacion.direccion : 'Ubicación no registrada'}</p>
+                <p style="color:#64748b; font-size:12px;">📍 ${s.ubicacion ? s.ubicacion.direccion : 'Ubicación no registrada'}${distTxt}</p>
             </div>`;
-        
-        if (ubiDestino && ubiDestino.id_cdad && s.ubicacion && s.ubicacion.id_cdad === ubiDestino.id_cdad) cCerca.innerHTML += html;
-        else cLejos.innerHTML += html;
+        (cerca ? cCerca : cLejos).innerHTML += html;
     });
 
-    if (cCerca.innerHTML === "") cCerca.innerHTML = "<p style='color:#64748b; font-size: 13px;'>No hay servicios registrados en tu ciudad de destino.</p>";
+    if (cCerca.innerHTML === "") cCerca.innerHTML = "<p style='color:#64748b; font-size: 13px;'>No hay servicios cerca de tu destino.</p>";
     if (cLejos.innerHTML === "") cLejos.innerHTML = "<p style='color:#64748b; font-size: 13px;'>No se encontraron más servicios.</p>";
 }
 
@@ -13631,6 +13823,34 @@ async function enviarItem(payload) {
 
 function finalizarPlan() { window.location.href = "ver_planes.html"; }
 function cerrarSesion() { localStorage.clear(); window.location.href = "../login.html"; }
+
+function actualizarInfoBusqueda() {
+    document.getElementById("infoBusqueda").innerHTML =
+        `📍 <b>Origen:</b> ${origenResuelto.lugar.descripcion}<br>🏁 <b>Destino:</b> ${destinoResuelto.lugar.descripcion}`;
+}
+
+function mostrarAlternativas() {
+    let html = "";
+    [["origen", origenResuelto], ["destino", destinoResuelto]].forEach(([tipo, r]) => {
+        const alts = (r && r.lugar.alternativas) || [];
+        if (!alts.length) return;
+        html += `<div style="margin-top:8px"><b>¿No es ese ${tipo}? Otras coincidencias:</b>` +
+            alts.map((a, i) => `<div><a href="#" onclick="elegirAlternativa('${tipo}',${i});return false;">${a.descripcion}</a></div>`).join("") + `</div>`;
+    });
+    document.getElementById("alternativasBusqueda").innerHTML = html;
+}
+
+function elegirAlternativa(tipo, i) {
+    const r = tipo === "origen" ? origenResuelto : destinoResuelto;
+    const alts = r.lugar.alternativas;
+    const nueva = alts[i];
+    const resto = [r.lugar, ...alts.filter((_, j) => j !== i)].map(x => ({ ...x, alternativas: [] }));
+    nueva.alternativas = resto;
+    r.lugar = nueva;
+    dibujarPreview(origenResuelto.lugar, destinoResuelto.lugar);
+    actualizarInfoBusqueda();
+    mostrarAlternativas();
+}
 </file>
 
 <file path="frontend/js/login.js">
@@ -15257,6 +15477,7 @@ async function inicializarMapasDePlanes(planes) {
           <button type="button" class="btn-outline btn-sm" style="margin-top: 8px;"
                   onclick="verUbicacionEnMapa()">🔍 Ver en el mapa</button>
           <div id="infoUbicacionServicio" style="font-size: 12px; color: #475569; margin-top: 6px;"></div>
+          <div id="alternativasServicio" style="font-size:12px;margin-top:6px;"></div>
           <div id="mapaServicio"
                style="display: none; height: 220px; margin-top: 8px; border-radius: 8px; border: 1px solid #cbd5e1; isolation: isolate;"></div>
         </div>
@@ -15399,6 +15620,7 @@ async function inicializarMapasDePlanes(planes) {
 
             <button type="button" onclick="buscarEnMapa()" style="background:#fff; color:#2563eb; border:1px solid #2563eb; padding:8px 14px; border-radius:6px; font-weight:bold; cursor:pointer;">🔍 Ver en el mapa</button>
             <div id="infoBusqueda" style="font-size:13px; color:#475569; margin-top:8px; max-width:520px;"></div>
+            <div id="alternativasBusqueda" style="font-size:13px;max-width:520px;"></div>
             <div id="mapaPreview" style="height:280px; max-width:520px; margin:10px 0 20px; border-radius:8px; border:1px solid #cbd5e1; z-index:1;"></div>
                         
             <div style="display: flex; gap: 20px; max-width: 420px;">
@@ -19030,421 +19252,727 @@ __pycache__/
 </file>
 
 <file path="estructura_PAT2.sql">
--- ============================================================
--- 1. CREACIÓN Y SELECCIÓN DE LA BASE DE DATOS
--- ============================================================
-DROP DATABASE IF EXISTS PAT2;
-CREATE DATABASE PAT2 CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
-USE PAT2;
+-- ============================================================================
+-- SCRIPT INICIAL PAT (3 PARTES: TABLAS -> FORÁNEAS -> INSERCIONES)
+-- Motor: MySQL / MariaDB (utf8mb4)
+-- ============================================================================
 
--- ============================================================
--- 2. TABLAS MAESTRAS O BÁSICAS (Sin Llaves Foráneas)
--- ============================================================
+SET NAMES utf8mb4;
+SET @OLD_FOREIGN_KEY_CHECKS = @@FOREIGN_KEY_CHECKS;
+SET FOREIGN_KEY_CHECKS = 0;
 
--- Tabla de Roles del sistema
-CREATE TABLE rol (
-  id_rol INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(50) NOT NULL UNIQUE,
-  descripcion TEXT DEFAULT NULL
-);
+CREATE DATABASE IF NOT EXISTS `pat2`
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_general_ci;
 
--- Tabla de Continentes
-CREATE TABLE continente (
-  id_conti INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(50) NOT NULL UNIQUE
-);
+USE `pat2`;
 
--- Tabla de Tipos de Turismo
-CREATE TABLE tp_turismo (
-  id_tp_turi INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(100) NOT NULL UNIQUE,
-  descripcion TEXT DEFAULT NULL
-);
+-- ============================================================================
+-- PARTE 1: CREACIÓN DE TABLAS
+-- ============================================================================
 
--- Tabla de Tipos de Servicio (Hospedaje, Transporte, Gastronomía, etc.)
-CREATE TABLE tp_servicio (
-  id_tp_serv INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(80) NOT NULL UNIQUE,
-  descripcion TEXT DEFAULT NULL
-);
+DROP TABLE IF EXISTS `detalle_resenas`;
+DROP TABLE IF EXISTS `resenas`;
+DROP TABLE IF EXISTS `pago_proveedor`;
+DROP TABLE IF EXISTS `pagos`;
+DROP TABLE IF EXISTS `det_plan_viaje`;
+DROP TABLE IF EXISTS `plan_viaje`;
+DROP TABLE IF EXISTS `servicio_transporte`;
+DROP TABLE IF EXISTS `servicio_recreacion`;
+DROP TABLE IF EXISTS `servicio_imagen`;
+DROP TABLE IF EXISTS `servicio_hospedaje`;
+DROP TABLE IF EXISTS `servicio_guia`;
+DROP TABLE IF EXISTS `servicio_gastronomia`;
+DROP TABLE IF EXISTS `servicio_condicion`;
+DROP TABLE IF EXISTS `servicio`;
+DROP TABLE IF EXISTS `proveedor_tp_servicio`;
+DROP TABLE IF EXISTS `proveedor`;
+DROP TABLE IF EXISTS `solicitud_tp_servicio`;
+DROP TABLE IF EXISTS `documentos`;
+DROP TABLE IF EXISTS `solicitud_proveedor`;
+DROP TABLE IF EXISTS `auditoria_rol`;
+DROP TABLE IF EXISTS `usuario`;
+DROP TABLE IF EXISTS `tp_turismo`;
+DROP TABLE IF EXISTS `tp_servicio`;
+DROP TABLE IF EXISTS `condiciones`;
+DROP TABLE IF EXISTS `politica`;
+DROP TABLE IF EXISTS `metodo_pago`;
+DROP TABLE IF EXISTS `gama`;
+DROP TABLE IF EXISTS `trayecto`;
+DROP TABLE IF EXISTS `ubicacion`;
+DROP TABLE IF EXISTS `ciudad`;
+DROP TABLE IF EXISTS `departamento`;
+DROP TABLE IF EXISTS `pais`;
+DROP TABLE IF EXISTS `continente`;
+DROP TABLE IF EXISTS `rol`;
 
--- Tabla de Gamas de Servicio (Económica, Media, Lujo, etc.)
-CREATE TABLE gama (
-  id_gama INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(50) NOT NULL,
-  descripcion TEXT DEFAULT NULL
-);
+CREATE TABLE `rol` (
+  `id_rol` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(50) NOT NULL,
+  `descripcion` text DEFAULT NULL,
+  PRIMARY KEY (`id_rol`),
+  UNIQUE KEY `nombre` (`nombre`)
+) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla de Métodos de Pago
-CREATE TABLE metodo_pago (
-  id_met_pago INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(80) NOT NULL,
-  descripcion TEXT DEFAULT NULL
-);
+CREATE TABLE `continente` (
+  `id_conti` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(50) NOT NULL,
+  PRIMARY KEY (`id_conti`),
+  UNIQUE KEY `nombre` (`nombre`)
+) ENGINE=InnoDB AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla de Políticas
-CREATE TABLE politica (
-  id_poli INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(150) NOT NULL,
-  descripcion TEXT NOT NULL,
-  estado ENUM('ACTIVA', 'INACTIVA') DEFAULT 'ACTIVA'
-);
+CREATE TABLE `pais` (
+  `id_pais` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(100) NOT NULL,
+  `id_conti` int(11) NOT NULL,
+  PRIMARY KEY (`id_pais`),
+  UNIQUE KEY `nombre` (`nombre`),
+  KEY `fk_pais_continente` (`id_conti`)
+) ENGINE=InnoDB AUTO_INCREMENT=4 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+CREATE TABLE `departamento` (
+  `id_depart` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(100) NOT NULL,
+  `id_pais` int(11) NOT NULL,
+  PRIMARY KEY (`id_depart`),
+  KEY `fk_departamento_pais` (`id_pais`)
+) ENGINE=InnoDB AUTO_INCREMENT=13 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- ============================================================
--- 3. UBICACIÓN GEOGRÁFICA (Países, Departamentos, Ciudades, Ubicaciones)
--- ============================================================
+CREATE TABLE `ciudad` (
+  `id_cdad` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(100) NOT NULL,
+  `id_depart` int(11) NOT NULL,
+  PRIMARY KEY (`id_cdad`),
+  KEY `fk_ciudad_departamento` (`id_depart`)
+) ENGINE=InnoDB AUTO_INCREMENT=26 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla de Países
-CREATE TABLE pais (
-  id_pais INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(100) NOT NULL UNIQUE,
-  id_conti INT NOT NULL,
-  CONSTRAINT fk_pais_continente FOREIGN KEY (id_conti) REFERENCES continente (id_conti)
-);
+CREATE TABLE `ubicacion` (
+  `id_ubi` int(11) NOT NULL AUTO_INCREMENT,
+  `direccion` varchar(255) NOT NULL,
+  `barrio` varchar(100) DEFAULT NULL,
+  `codigo_postal` varchar(15) DEFAULT NULL,
+  `latitud` decimal(10,8) NOT NULL,
+  `longitud` decimal(11,8) NOT NULL,
+  `descripcion` text DEFAULT NULL,
+  `id_cdad` int(11) DEFAULT NULL,
+  `activo` tinyint(1) DEFAULT 1,
+  PRIMARY KEY (`id_ubi`),
+  KEY `fk_ubicacion_ciudad` (`id_cdad`)
+) ENGINE=InnoDB AUTO_INCREMENT=37 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla de Departamentos
-CREATE TABLE departamento (
-  id_depart INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(100) NOT NULL,
-  id_pais INT NOT NULL,
-  CONSTRAINT fk_departamento_pais FOREIGN KEY (id_pais) REFERENCES pais (id_pais)
-);
+CREATE TABLE `trayecto` (
+  `id_tray` int(11) NOT NULL AUTO_INCREMENT,
+  `id_origen` int(11) NOT NULL,
+  `id_destino` int(11) NOT NULL,
+  `distancia_km` decimal(10,2) NOT NULL,
+  `tiempo_estimado_min` int(11) NOT NULL,
+  `fecha_calculo` datetime DEFAULT current_timestamp(),
+  PRIMARY KEY (`id_tray`),
+  KEY `fk_trayecto_origen` (`id_origen`),
+  KEY `fk_trayecto_destino` (`id_destino`)
+) ENGINE=InnoDB AUTO_INCREMENT=8 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla de Ciudades
-CREATE TABLE ciudad (
-  id_cdad INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(100) NOT NULL,
-  id_depart INT NOT NULL,
-  CONSTRAINT fk_ciudad_departamento FOREIGN KEY (id_depart) REFERENCES departamento (id_depart)
-);
+CREATE TABLE `gama` (
+  `id_gama` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(50) NOT NULL,
+  `descripcion` text DEFAULT NULL,
+  PRIMARY KEY (`id_gama`)
+) ENGINE=InnoDB AUTO_INCREMENT=5 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla de Ubicaciones específicas
--- Tabla de Ubicaciones específicas
-CREATE TABLE ubicacion (
-  id_ubi INT AUTO_INCREMENT PRIMARY KEY,
-  direccion VARCHAR(255) NOT NULL,
-  barrio VARCHAR(100) DEFAULT NULL,
-  codigo_postal VARCHAR(15) DEFAULT NULL,
-  latitud DECIMAL(10,8) NOT NULL,
-  longitud DECIMAL(11,8) NOT NULL,
-  descripcion TEXT DEFAULT NULL,
-  id_cdad INT DEFAULT NULL,
-  activo TINYINT(1) DEFAULT 1,
-  CONSTRAINT fk_ubicacion_ciudad FOREIGN KEY (id_cdad) REFERENCES ciudad (id_cdad)
-);
+CREATE TABLE `metodo_pago` (
+  `id_met_pago` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(80) NOT NULL,
+  `descripcion` text DEFAULT NULL,
+  PRIMARY KEY (`id_met_pago`)
+) ENGINE=InnoDB AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+CREATE TABLE `politica` (
+  `id_poli` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(150) NOT NULL,
+  `descripcion` text NOT NULL,
+  `estado` enum('ACTIVA','INACTIVA') DEFAULT 'ACTIVA',
+  PRIMARY KEY (`id_poli`)
+) ENGINE=InnoDB AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- ============================================================
--- 4. USUARIOS, SOLICITUDES Y PROVEEDORES
--- ============================================================
+CREATE TABLE `condiciones` (
+  `id_condi` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(150) NOT NULL,
+  `descripcion` text NOT NULL,
+  `tipo` enum('CANCELACION','RESERVA','PAGO','USO','OTRO') DEFAULT 'OTRO',
+  `estado` enum('ACTIVA','INACTIVA') DEFAULT 'ACTIVA',
+  `id_poli` int(11) NOT NULL,
+  PRIMARY KEY (`id_condi`),
+  KEY `fk_condiciones_politica` (`id_poli`)
+) ENGINE=InnoDB AUTO_INCREMENT=11 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla de Usuarios
-CREATE TABLE usuario (
-  id_usu INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(100) NOT NULL,
-  apellido VARCHAR(100) NOT NULL,
-  email VARCHAR(150) NOT NULL UNIQUE,
-  password_hash VARCHAR(255) NOT NULL,
-  id_rol INT NOT NULL DEFAULT 1,
-  activo TINYINT(1) DEFAULT 1,
-  token_recuperacion VARCHAR(255) DEFAULT NULL,
-  token_expiracion DATETIME DEFAULT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_usuario_rol FOREIGN KEY (id_rol) REFERENCES rol (id_rol)
-);
+CREATE TABLE `tp_servicio` (
+  `id_tp_serv` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(80) NOT NULL,
+  `descripcion` text DEFAULT NULL,
+  PRIMARY KEY (`id_tp_serv`),
+  UNIQUE KEY `nombre` (`nombre`)
+) ENGINE=InnoDB AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla de Solicitud para ser Proveedor
-CREATE TABLE solicitud_proveedor (
-  id_sp INT AUTO_INCREMENT PRIMARY KEY,
-  id_usu INT NOT NULL,
-  nit VARCHAR(20) NOT NULL UNIQUE,
-  razon_social VARCHAR(150) NOT NULL,
-  telefono_contacto VARCHAR(20) NOT NULL,
-  cuenta_bancaria VARCHAR(50) NOT NULL,
-  banco VARCHAR(50) NOT NULL,
-  estado ENUM('EN_REVISION', 'APROBADA', 'RECHAZADA') DEFAULT 'EN_REVISION',
-  fecha_solicitud DATETIME DEFAULT CURRENT_TIMESTAMP,
-  observaciones TEXT DEFAULT NULL,
-  CONSTRAINT fk_solicitud_usuario FOREIGN KEY (id_usu) REFERENCES usuario (id_usu)
-);
+CREATE TABLE `tp_turismo` (
+  `id_tp_turi` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(100) NOT NULL,
+  `descripcion` text DEFAULT NULL,
+  PRIMARY KEY (`id_tp_turi`),
+  UNIQUE KEY `nombre` (`nombre`)
+) ENGINE=InnoDB AUTO_INCREMENT=9 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla Intermedia: Tipos de servicio que solicita ofrecer un proveedor
-CREATE TABLE solicitud_tp_servicio (
-  id_sol_serv INT AUTO_INCREMENT PRIMARY KEY,
-  id_sp INT NOT NULL,
-  id_tp_serv INT NOT NULL,
-  CONSTRAINT fk_sol_serv_sp FOREIGN KEY (id_sp) REFERENCES solicitud_proveedor (id_sp) ON DELETE CASCADE,
-  CONSTRAINT fk_sol_serv_tp FOREIGN KEY (id_tp_serv) REFERENCES tp_servicio (id_tp_serv)
-);
+CREATE TABLE `usuario` (
+  `id_usu` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(100) NOT NULL,
+  `apellido` varchar(100) NOT NULL,
+  `email` varchar(150) NOT NULL,
+  `password_hash` varchar(255) NOT NULL,
+  `id_rol` int(11) NOT NULL DEFAULT 1,
+  `activo` tinyint(1) DEFAULT 1,
+  `token_recuperacion` varchar(255) DEFAULT NULL,
+  `token_expiracion` datetime DEFAULT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  PRIMARY KEY (`id_usu`),
+  UNIQUE KEY `email` (`email`),
+  KEY `fk_usuario_rol` (`id_rol`)
+) ENGINE=InnoDB AUTO_INCREMENT=28 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla de Proveedores Aprobados
-CREATE TABLE proveedor (
-  id_prov INT AUTO_INCREMENT PRIMARY KEY,
-  id_usu INT NOT NULL UNIQUE,
-  id_sp INT NOT NULL UNIQUE,
-  estado ENUM('ACTIVO', 'INACTIVO', 'SUSPENDIDO') DEFAULT 'ACTIVO',
-  fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_proveedor_usuario FOREIGN KEY (id_usu) REFERENCES usuario (id_usu),
-  CONSTRAINT fk_proveedor_solicitud FOREIGN KEY (id_sp) REFERENCES solicitud_proveedor (id_sp)
-);
+CREATE TABLE `auditoria_rol` (
+  `id_auditoria` int(11) NOT NULL AUTO_INCREMENT,
+  `id_admin` int(11) NOT NULL,
+  `id_usu_afectado` int(11) NOT NULL,
+  `rol_anterior` int(11) NOT NULL,
+  `rol_nuevo` int(11) NOT NULL,
+  `motivo` varchar(255) DEFAULT NULL,
+  `fecha_cambio` datetime DEFAULT current_timestamp(),
+  PRIMARY KEY (`id_auditoria`),
+  KEY `fk_audrol_admin` (`id_admin`),
+  KEY `fk_audrol_afectado` (`id_usu_afectado`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla Intermedia: Servicios que ofrece un proveedor activo
-CREATE TABLE proveedor_tp_servicio (
-  id_prov_serv INT AUTO_INCREMENT PRIMARY KEY,
-  id_prov INT NOT NULL,
-  id_tp_serv INT NOT NULL,
-  CONSTRAINT fk_prov_serv_prov FOREIGN KEY (id_prov) REFERENCES proveedor (id_prov) ON DELETE CASCADE,
-  CONSTRAINT fk_prov_serv_tp FOREIGN KEY (id_tp_serv) REFERENCES tp_servicio (id_tp_serv)
-);
+CREATE TABLE `solicitud_proveedor` (
+  `id_sp` int(11) NOT NULL AUTO_INCREMENT,
+  `id_usu` int(11) NOT NULL,
+  `nit` varchar(20) NOT NULL,
+  `razon_social` varchar(150) NOT NULL,
+  `telefono_contacto` varchar(20) NOT NULL,
+  `cuenta_bancaria` varchar(50) NOT NULL,
+  `banco` varchar(50) NOT NULL,
+  `estado` enum('EN_REVISION','APROBADA','RECHAZADA') DEFAULT 'EN_REVISION',
+  `fecha_solicitud` datetime DEFAULT current_timestamp(),
+  `observaciones` text DEFAULT NULL,
+  PRIMARY KEY (`id_sp`),
+  UNIQUE KEY `nit` (`nit`),
+  KEY `fk_solicitud_usuario` (`id_usu`)
+) ENGINE=InnoDB AUTO_INCREMENT=18 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla de Documentos adjuntos por usuario/solicitud
-CREATE TABLE documentos (
-  id_doc INT AUTO_INCREMENT PRIMARY KEY,
-  id_usu INT NOT NULL,
-  id_sp INT DEFAULT NULL,
-  tipo_doc VARCHAR(100) NOT NULL,
-  nom_archivo VARCHAR(255) NOT NULL,
-  ruta_archivo VARCHAR(500) NOT NULL,
-  fecha_carga DATETIME DEFAULT CURRENT_TIMESTAMP,
-  estado ENUM('PENDIENTE', 'APROBADO', 'RECHAZADO') DEFAULT 'PENDIENTE',
-  CONSTRAINT fk_documentos_usuario FOREIGN KEY (id_usu) REFERENCES usuario (id_usu) ON DELETE CASCADE,
-  CONSTRAINT fk_documentos_solicitud FOREIGN KEY (id_sp) REFERENCES solicitud_proveedor (id_sp)
-);
+CREATE TABLE `documentos` (
+  `id_doc` int(11) NOT NULL AUTO_INCREMENT,
+  `id_usu` int(11) NOT NULL,
+  `id_sp` int(11) DEFAULT NULL,
+  `tipo_doc` varchar(100) NOT NULL,
+  `nom_archivo` varchar(255) NOT NULL,
+  `ruta_archivo` varchar(500) NOT NULL,
+  `fecha_carga` datetime DEFAULT current_timestamp(),
+  `estado` enum('PENDIENTE','APROBADO','RECHAZADO') DEFAULT 'PENDIENTE',
+  PRIMARY KEY (`id_doc`),
+  KEY `fk_documentos_usuario` (`id_usu`),
+  KEY `fk_documentos_solicitud` (`id_sp`)
+) ENGINE=InnoDB AUTO_INCREMENT=24 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+CREATE TABLE `solicitud_tp_servicio` (
+  `id_sol_serv` int(11) NOT NULL AUTO_INCREMENT,
+  `id_sp` int(11) NOT NULL,
+  `id_tp_serv` int(11) NOT NULL,
+  PRIMARY KEY (`id_sol_serv`),
+  KEY `fk_sol_serv_sp` (`id_sp`),
+  KEY `fk_sol_serv_tp` (`id_tp_serv`)
+) ENGINE=InnoDB AUTO_INCREMENT=23 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- ============================================================
--- 5. SERVICIOS Y SUS CONDICIONES
--- ============================================================
+CREATE TABLE `proveedor` (
+  `id_prov` int(11) NOT NULL AUTO_INCREMENT,
+  `id_usu` int(11) NOT NULL,
+  `id_sp` int(11) NOT NULL,
+  `estado` enum('ACTIVO','INACTIVO','SUSPENDIDO') DEFAULT 'ACTIVO',
+  `fecha_registro` datetime DEFAULT current_timestamp(),
+  PRIMARY KEY (`id_prov`),
+  UNIQUE KEY `id_usu` (`id_usu`),
+  UNIQUE KEY `id_sp` (`id_sp`)
+) ENGINE=InnoDB AUTO_INCREMENT=18 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla Principal de Servicios
-CREATE TABLE servicio (
-  id_servicio INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(150) NOT NULL,
-  descripcion TEXT NOT NULL,
-  id_tp_serv INT NOT NULL,
-  id_tp_turi INT NOT NULL,
-  id_gama INT NOT NULL,
-  id_prov INT DEFAULT NULL,
-  id_ubi INT NOT NULL,
-  disponibilidad TINYINT(1) DEFAULT 1,
-  activo TINYINT(1) DEFAULT 1,
-  fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  CONSTRAINT fk_servicio_tp_serv FOREIGN KEY (id_tp_serv) REFERENCES tp_servicio (id_tp_serv),
-  CONSTRAINT fk_servicio_tp_turi FOREIGN KEY (id_tp_turi) REFERENCES tp_turismo (id_tp_turi),
-  CONSTRAINT fk_servicio_gama FOREIGN KEY (id_gama) REFERENCES gama (id_gama),
-  CONSTRAINT fk_servicio_proveedor FOREIGN KEY (id_prov) REFERENCES proveedor (id_prov),
-  CONSTRAINT fk_servicio_ubicacion FOREIGN KEY (id_ubi) REFERENCES ubicacion (id_ubi)
-);
+CREATE TABLE `proveedor_tp_servicio` (
+  `id_prov_serv` int(11) NOT NULL AUTO_INCREMENT,
+  `id_prov` int(11) NOT NULL,
+  `id_tp_serv` int(11) NOT NULL,
+  PRIMARY KEY (`id_prov_serv`),
+  KEY `fk_prov_serv_prov` (`id_prov`),
+  KEY `fk_prov_serv_tp` (`id_tp_serv`)
+) ENGINE=InnoDB AUTO_INCREMENT=30 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Condiciones de Servicio
-CREATE TABLE condiciones (
-  id_condi INT AUTO_INCREMENT PRIMARY KEY,
-  nombre VARCHAR(150) NOT NULL,
-  descripcion TEXT NOT NULL,
-  tipo ENUM('CANCELACION', 'RESERVA', 'PAGO', 'USO', 'OTRO') DEFAULT 'OTRO',
-  estado ENUM('ACTIVA', 'INACTIVA') DEFAULT 'ACTIVA',
-  id_poli INT NOT NULL,
-  CONSTRAINT fk_condiciones_politica FOREIGN KEY (id_poli) REFERENCES politica (id_poli)
-);
+CREATE TABLE `servicio` (
+  `id_servicio` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre` varchar(150) NOT NULL,
+  `descripcion` text NOT NULL,
+  `id_tp_serv` int(11) NOT NULL,
+  `id_tp_turi` int(11) NOT NULL,
+  `id_gama` int(11) NOT NULL,
+  `id_prov` int(11) DEFAULT NULL,
+  `id_ubi` int(11) NOT NULL,
+  `disponibilidad` tinyint(1) DEFAULT 1,
+  `activo` tinyint(1) DEFAULT 1,
+  `fecha_creacion` datetime DEFAULT current_timestamp(),
+  `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp(),
+  PRIMARY KEY (`id_servicio`),
+  KEY `fk_servicio_tp_serv` (`id_tp_serv`),
+  KEY `fk_servicio_tp_turi` (`id_tp_turi`),
+  KEY `fk_servicio_gama` (`id_gama`),
+  KEY `fk_servicio_proveedor` (`id_prov`),
+  KEY `fk_servicio_ubicacion` (`id_ubi`)
+) ENGINE=InnoDB AUTO_INCREMENT=181 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Tabla Intermedia: Servicios con sus Condiciones
-CREATE TABLE servicio_condicion (
-  id_servicio_condi INT AUTO_INCREMENT PRIMARY KEY,
-  id_servicio INT NOT NULL,
-  id_condi INT NOT NULL,
-  CONSTRAINT uq_servcondi UNIQUE (id_servicio, id_condi),
-  CONSTRAINT fk_servcondi_servicio FOREIGN KEY (id_servicio) REFERENCES servicio (id_servicio) ON DELETE CASCADE,
-  CONSTRAINT fk_servcondi_condicion FOREIGN KEY (id_condi) REFERENCES condiciones (id_condi)
-);
+CREATE TABLE `servicio_condicion` (
+  `id_servicio_condi` int(11) NOT NULL AUTO_INCREMENT,
+  `id_servicio` int(11) NOT NULL,
+  `id_condi` int(11) NOT NULL,
+  PRIMARY KEY (`id_servicio_condi`),
+  UNIQUE KEY `uq_servcondi` (`id_servicio`,`id_condi`),
+  KEY `fk_servcondi_condicion` (`id_condi`)
+) ENGINE=InnoDB AUTO_INCREMENT=343 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Imágenes asociadas a Servicios
-CREATE TABLE servicio_imagen (
-  id_img INT AUTO_INCREMENT PRIMARY KEY,
-  id_servicio INT NOT NULL,
-  ruta_url VARCHAR(500) NOT NULL,
-  tipo_arch VARCHAR(50) NOT NULL,
-  es_principal TINYINT(1) DEFAULT 0,
-  CONSTRAINT fk_servimg_servicio FOREIGN KEY (id_servicio) REFERENCES servicio (id_servicio) ON DELETE CASCADE
-);
+CREATE TABLE `servicio_gastronomia` (
+  `id_gast` int(11) NOT NULL AUTO_INCREMENT,
+  `id_servicio` int(11) NOT NULL,
+  `nom_platillo_menu` varchar(100) NOT NULL,
+  `porciones` int(11) DEFAULT 1,
+  `vlr_estimado` decimal(10,2) NOT NULL,
+  `horario_atencion` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`id_gast`),
+  KEY `fk_gast_servicio` (`id_servicio`)
+) ENGINE=InnoDB AUTO_INCREMENT=71 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+CREATE TABLE `servicio_guia` (
+  `id_guia` int(11) NOT NULL AUTO_INCREMENT,
+  `id_servicio` int(11) NOT NULL,
+  `nombre_tour` varchar(150) NOT NULL,
+  `vlr_tour` decimal(10,2) NOT NULL,
+  `duracion_horas` int(11) NOT NULL,
+  `capacidad_grupo` int(11) NOT NULL,
+  `dificultad` enum('BAJA','MEDIA','ALTA') DEFAULT 'MEDIA',
+  `horario` varchar(100) DEFAULT NULL,
+  PRIMARY KEY (`id_guia`),
+  KEY `fk_guia_servicio` (`id_servicio`)
+) ENGINE=InnoDB AUTO_INCREMENT=36 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- ============================================================
--- 6. SUB-TABLAS DE ESPECIALIZACIÓN DE SERVICIOS
--- ============================================================
+CREATE TABLE `servicio_hospedaje` (
+  `id_hosp` int(11) NOT NULL AUTO_INCREMENT,
+  `id_servicio` int(11) NOT NULL,
+  `nom_unidad` varchar(100) NOT NULL,
+  `capacidad_personas` int(11) NOT NULL,
+  `vlr_noche` decimal(10,2) NOT NULL,
+  `horario_checkin` varchar(50) DEFAULT NULL,
+  `horario_checkout` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`id_hosp`),
+  KEY `fk_hosp_servicio` (`id_servicio`)
+) ENGINE=InnoDB AUTO_INCREMENT=68 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Detalles para Servicios de Hospedaje
-CREATE TABLE servicio_hospedaje (
-  id_hosp INT AUTO_INCREMENT PRIMARY KEY,
-  id_servicio INT NOT NULL,
-  nom_unidad VARCHAR(100) NOT NULL,
-  capacidad_personas INT NOT NULL,
-  vlr_noche DECIMAL(10,2) NOT NULL,
-  horario_checkin VARCHAR(50) DEFAULT NULL,
-  horario_checkout VARCHAR(50) DEFAULT NULL,
-  CONSTRAINT fk_hosp_servicio FOREIGN KEY (id_servicio) REFERENCES servicio (id_servicio) ON DELETE CASCADE
-);
+CREATE TABLE `servicio_imagen` (
+  `id_img` int(11) NOT NULL AUTO_INCREMENT,
+  `id_servicio` int(11) NOT NULL,
+  `ruta_url` varchar(500) NOT NULL,
+  `tipo_arch` varchar(50) NOT NULL,
+  `es_principal` tinyint(1) DEFAULT 0,
+  PRIMARY KEY (`id_img`),
+  KEY `fk_servimg_servicio` (`id_servicio`)
+) ENGINE=InnoDB AUTO_INCREMENT=181 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Detalles para Servicios Gastronómicos
-CREATE TABLE servicio_gastronomia (
-  id_gast INT AUTO_INCREMENT PRIMARY KEY,
-  id_servicio INT NOT NULL,
-  nom_platillo_menu VARCHAR(100) NOT NULL,
-  porciones INT DEFAULT 1,
-  vlr_estimado DECIMAL(10,2) NOT NULL,
-  horario_atencion VARCHAR(100) DEFAULT NULL,
-  CONSTRAINT fk_gast_servicio FOREIGN KEY (id_servicio) REFERENCES servicio (id_servicio) ON DELETE CASCADE
-);
+CREATE TABLE `servicio_recreacion` (
+  `id_rec` int(11) NOT NULL AUTO_INCREMENT,
+  `id_servicio` int(11) NOT NULL,
+  `nom_actividad` varchar(150) NOT NULL,
+  `duracion` varchar(50) DEFAULT NULL,
+  `horario` varchar(100) DEFAULT NULL,
+  `vlr_persona` decimal(10,2) DEFAULT 0.00,
+  `capacidad` int(11) DEFAULT NULL,
+  `es_evento_local` tinyint(1) DEFAULT 0,
+  PRIMARY KEY (`id_rec`),
+  KEY `fk_rec_servicio` (`id_servicio`)
+) ENGINE=InnoDB AUTO_INCREMENT=40 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Detalles para Servicios de Guía
-CREATE TABLE servicio_guia (
-  id_guia INT AUTO_INCREMENT PRIMARY KEY,
-  id_servicio INT NOT NULL,
-  nombre_tour VARCHAR(150) NOT NULL,
-  vlr_tour DECIMAL(10,2) NOT NULL,
-  duracion_horas INT NOT NULL,
-  capacidad_grupo INT NOT NULL,
-  dificultad ENUM('BAJA', 'MEDIA', 'ALTA') DEFAULT 'MEDIA',
-  horario VARCHAR(100) DEFAULT NULL,
-  CONSTRAINT fk_guia_servicio FOREIGN KEY (id_servicio) REFERENCES servicio (id_servicio) ON DELETE CASCADE
-);
+CREATE TABLE `servicio_transporte` (
+  `id_trans` int(11) NOT NULL AUTO_INCREMENT,
+  `id_servicio` int(11) NOT NULL,
+  `tipo_vehiculo` varchar(80) NOT NULL,
+  `capacidad_pasajeros` int(11) NOT NULL,
+  `vlr_km` decimal(10,2) NOT NULL,
+  `tarifa_base` decimal(10,2) NOT NULL,
+  `horario_servicio` varchar(100) DEFAULT NULL,
+  `es_ruta_programada` tinyint(1) DEFAULT 0,
+  `id_origen` int(11) DEFAULT NULL,
+  `id_destino` int(11) DEFAULT NULL,
+  `fecha_salida` datetime DEFAULT NULL,
+  PRIMARY KEY (`id_trans`),
+  KEY `fk_trans_servicio` (`id_servicio`),
+  KEY `fk_trans_ori` (`id_origen`),
+  KEY `fk_trans_des` (`id_destino`)
+) ENGINE=InnoDB AUTO_INCREMENT=37 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Detalles para Servicios de Recreación
-CREATE TABLE servicio_recreacion (
-  id_rec INT AUTO_INCREMENT PRIMARY KEY,
-  id_servicio INT NOT NULL,
-  nom_actividad VARCHAR(150) NOT NULL,
-  duracion VARCHAR(50) DEFAULT NULL,
-  horario VARCHAR(100) DEFAULT NULL,
-  vlr_persona DECIMAL(10,2) DEFAULT 0.00,
-  capacidad INT DEFAULT NULL,
-  es_evento_local TINYINT(1) DEFAULT 0,
-  CONSTRAINT fk_rec_servicio FOREIGN KEY (id_servicio) REFERENCES servicio (id_servicio) ON DELETE CASCADE
-);
+CREATE TABLE `plan_viaje` (
+  `id_plan_viaje` int(11) NOT NULL AUTO_INCREMENT,
+  `nombre_plan` varchar(100) NOT NULL,
+  `fecha_inicio` date NOT NULL,
+  `fecha_fin` date NOT NULL,
+  `costo_total_estimado` decimal(10,2) DEFAULT 0.00,
+  `estado` enum('DESEO','RESERVADO','CANCELADO','FINALIZADO') DEFAULT 'DESEO',
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp(),
+  `id_usu` int(11) NOT NULL,
+  `id_ubicacion_origen` int(11) DEFAULT NULL,
+  `id_ubicacion_destino` int(11) DEFAULT NULL,
+  PRIMARY KEY (`id_plan_viaje`),
+  KEY `fk_plan_usuario` (`id_usu`),
+  KEY `fk_plan_origen` (`id_ubicacion_origen`),
+  KEY `fk_plan_destino` (`id_ubicacion_destino`)
+) ENGINE=InnoDB AUTO_INCREMENT=13 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Detalles para Servicios de Transporte
-CREATE TABLE servicio_transporte (
-  id_trans INT AUTO_INCREMENT PRIMARY KEY,
-  id_servicio INT NOT NULL,
-  tipo_vehiculo VARCHAR(80) NOT NULL,
-  capacidad_pasajeros INT NOT NULL,
-  vlr_km DECIMAL(10,2) NOT NULL,
-  tarifa_base DECIMAL(10,2) NOT NULL,
-  horario_servicio VARCHAR(100) DEFAULT NULL,
-  es_ruta_programada TINYINT(1) DEFAULT 0,
-  id_origen INT DEFAULT NULL,
-  id_destino INT DEFAULT NULL,
-  fecha_salida DATETIME DEFAULT NULL,
-  CONSTRAINT fk_trans_servicio FOREIGN KEY (id_servicio) REFERENCES servicio (id_servicio) ON DELETE CASCADE,
-  CONSTRAINT fk_trans_ori FOREIGN KEY (id_origen) REFERENCES ubicacion (id_ubi),
-  CONSTRAINT fk_trans_des FOREIGN KEY (id_destino) REFERENCES ubicacion (id_ubi)
-);
+CREATE TABLE `det_plan_viaje` (
+  `id_det_plan` int(11) NOT NULL AUTO_INCREMENT,
+  `id_plan_viaje` int(11) NOT NULL,
+  `id_servicio` int(11) DEFAULT NULL,
+  `tipo_item` enum('HOSPEDAJE','GASTRONOMIA','RECREACION','TRANSPORTE','GUIA','TRANSPORTE_PROPIO','DESTINO_TURISTICO') NOT NULL DEFAULT 'DESTINO_TURISTICO',
+  `id_item_especifico` int(11) DEFAULT NULL,
+  `id_ubicacion_origen` int(11) DEFAULT NULL,
+  `id_ubicacion_destino` int(11) DEFAULT NULL,
+  `cantidad` int(11) DEFAULT 1,
+  `fecha_servicio` date NOT NULL,
+  `costo_unitario_calculado` decimal(10,2) NOT NULL,
+  `subtotal_calculado` decimal(10,2) NOT NULL,
+  `observaciones` varchar(255) DEFAULT NULL,
+  `tiempo_estimado_min` int(11) DEFAULT 0,
+  PRIMARY KEY (`id_det_plan`),
+  KEY `fk_detplan_plan` (`id_plan_viaje`),
+  KEY `fk_detplan_servicio` (`id_servicio`),
+  KEY `fk_detplan_origen` (`id_ubicacion_origen`),
+  KEY `fk_detplan_destino` (`id_ubicacion_destino`)
+) ENGINE=InnoDB AUTO_INCREMENT=22 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+CREATE TABLE `pagos` (
+  `id_pago` int(11) NOT NULL AUTO_INCREMENT,
+  `id_plan_viaje` int(11) NOT NULL,
+  `id_met_pago` int(11) NOT NULL,
+  `valor_total` decimal(10,2) NOT NULL,
+  `estado` enum('PENDIENTE','APROBADO','RECHAZADO','REEMBOLSADO') DEFAULT 'PENDIENTE',
+  `referencia_transaccion` varchar(100) NOT NULL,
+  `fecha_pago` datetime DEFAULT current_timestamp(),
+  PRIMARY KEY (`id_pago`),
+  UNIQUE KEY `referencia_transaccion` (`referencia_transaccion`),
+  KEY `fk_pago_plan` (`id_plan_viaje`),
+  KEY `fk_pago_metodo` (`id_met_pago`)
+) ENGINE=InnoDB AUTO_INCREMENT=6 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- ============================================================
--- 7. PLAN DE VIAJE, RESEÑAS Y PAGOS
--- ============================================================
+CREATE TABLE `pago_proveedor` (
+  `id_pago_prov` int(11) NOT NULL AUTO_INCREMENT,
+  `id_pago` int(11) NOT NULL,
+  `id_prov` int(11) NOT NULL,
+  `monto_subtotal` decimal(10,2) NOT NULL,
+  `comision_plataforma` decimal(10,2) DEFAULT 0.00,
+  `monto_neto_proveedor` decimal(10,2) NOT NULL,
+  `estado_transferencia` enum('PENDIENTE','TRANSFERIDO','RETENIDO') DEFAULT 'PENDIENTE',
+  `fecha_transferencia` datetime DEFAULT NULL,
+  PRIMARY KEY (`id_pago_prov`),
+  KEY `fk_pagoprov_pago` (`id_pago`),
+  KEY `fk_pagoprov_proveedor` (`id_prov`)
+) ENGINE=InnoDB AUTO_INCREMENT=12 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Plan de Viaje del usuario
-CREATE TABLE plan_viaje (
-  id_plan_viaje INT AUTO_INCREMENT PRIMARY KEY,
-  nombre_plan VARCHAR(100) NOT NULL,
-  fecha_inicio DATE NOT NULL,
-  fecha_fin DATE NOT NULL,
-  costo_total_estimado DECIMAL(10,2) DEFAULT 0.00,
-  estado ENUM('DESEO', 'RESERVADO', 'CANCELADO', 'FINALIZADO') DEFAULT 'DESEO',
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  id_usu INT NOT NULL,
-  id_ubicacion_origen INT DEFAULT NULL,
-  id_ubicacion_destino INT DEFAULT NULL,
-  CONSTRAINT fk_plan_usuario FOREIGN KEY (id_usu) REFERENCES usuario (id_usu),
-  CONSTRAINT fk_plan_origen FOREIGN KEY (id_ubicacion_origen) REFERENCES ubicacion (id_ubi),
-  CONSTRAINT fk_plan_destino FOREIGN KEY (id_ubicacion_destino) REFERENCES ubicacion (id_ubi)
-);
+CREATE TABLE `resenas` (
+  `id_resena` int(11) NOT NULL AUTO_INCREMENT,
+  `id_usu` int(11) NOT NULL,
+  `id_servicio` int(11) NOT NULL,
+  `clf_general` decimal(2,1) NOT NULL CHECK (`clf_general` between 1.0 and 5.0),
+  `comentario` varchar(1000) DEFAULT NULL,
+  `fecha_resena` datetime DEFAULT current_timestamp(),
+  `estado` enum('ACTIVA','OCULTA','REPORTADA') DEFAULT 'ACTIVA',
+  `respuesta_proveedor` varchar(1000) DEFAULT NULL,
+  `fecha_respuesta` datetime DEFAULT NULL,
+  PRIMARY KEY (`id_resena`),
+  UNIQUE KEY `uq_resena_usuario_servicio` (`id_usu`,`id_servicio`),
+  KEY `fk_resena_servicio` (`id_servicio`)
+) ENGINE=InnoDB AUTO_INCREMENT=10 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Detalle de los ítems del Plan de Viaje
-CREATE TABLE det_plan_viaje (
-  id_det_plan INT AUTO_INCREMENT PRIMARY KEY,
-  id_plan_viaje INT NOT NULL,
-  id_servicio INT DEFAULT NULL,
-  tipo_item ENUM('HOSPEDAJE', 'GASTRONOMIA', 'RECREACION', 'TRANSPORTE', 'GUIA', 'TRANSPORTE_PROPIO', 'DESTINO_TURISTICO') NOT NULL DEFAULT 'DESTINO_TURISTICO',
-  id_item_especifico INT DEFAULT NULL,
-  id_ubicacion_origen INT DEFAULT NULL,
-  id_ubicacion_destino INT DEFAULT NULL,
-  cantidad INT DEFAULT 1,
-  fecha_servicio DATE NOT NULL,
-  costo_unitario_calculado DECIMAL(10,2) NOT NULL,
-  subtotal_calculado DECIMAL(10,2) NOT NULL,
-  observaciones VARCHAR(255) DEFAULT NULL,
-  tiempo_estimado_min INT DEFAULT 0,
-  CONSTRAINT fk_detplan_plan FOREIGN KEY (id_plan_viaje) REFERENCES plan_viaje (id_plan_viaje) ON DELETE CASCADE,
-  CONSTRAINT fk_detplan_servicio FOREIGN KEY (id_servicio) REFERENCES servicio (id_servicio),
-  CONSTRAINT fk_detplan_origen FOREIGN KEY (id_ubicacion_origen) REFERENCES ubicacion (id_ubi),
-  CONSTRAINT fk_detplan_destino FOREIGN KEY (id_ubicacion_destino) REFERENCES ubicacion (id_ubi)
-);
+CREATE TABLE `detalle_resenas` (
+  `id_detalle_resena` int(11) NOT NULL AUTO_INCREMENT,
+  `id_resena` int(11) NOT NULL,
+  `criterio` varchar(100) NOT NULL,
+  `calificacion` decimal(2,1) NOT NULL CHECK (`calificacion` between 1.0 and 5.0),
+  PRIMARY KEY (`id_detalle_resena`),
+  KEY `fk_detresena_resena` (`id_resena`)
+) ENGINE=InnoDB AUTO_INCREMENT=23 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
--- Trayectos calculados entre ubicaciones
-CREATE TABLE trayecto (
-  id_tray INT AUTO_INCREMENT PRIMARY KEY,
-  id_origen INT NOT NULL,
-  id_destino INT NOT NULL,
-  distancia_km DECIMAL(10,2) NOT NULL,
-  tiempo_estimado_min INT NOT NULL,
-  fecha_calculo DATETIME DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_trayecto_origen FOREIGN KEY (id_origen) REFERENCES ubicacion (id_ubi),
-  CONSTRAINT fk_trayecto_destino FOREIGN KEY (id_destino) REFERENCES ubicacion (id_ubi)
-);
+-- ============================================================================
+-- PARTE 2: LLAVES FORÁNEAS (FOREIGN KEYS)
+-- ============================================================================
 
--- Reseñas de servicios por parte de usuarios
-CREATE TABLE resenas (
-  id_resena INT AUTO_INCREMENT PRIMARY KEY,
-  id_usu INT NOT NULL,
-  id_servicio INT NOT NULL,
-  clf_general DECIMAL(2,1) NOT NULL CHECK (clf_general BETWEEN 1.0 AND 5.0),
-  comentario VARCHAR(1000) DEFAULT NULL,
-  fecha_resena DATETIME DEFAULT CURRENT_TIMESTAMP,
-  estado ENUM('ACTIVA', 'OCULTA', 'REPORTADA') DEFAULT 'ACTIVA',
-  CONSTRAINT uq_resena_usuario_servicio UNIQUE (id_usu, id_servicio),
-  CONSTRAINT fk_resena_usuario FOREIGN KEY (id_usu) REFERENCES usuario (id_usu),
-  CONSTRAINT fk_resena_servicio FOREIGN KEY (id_servicio) REFERENCES servicio (id_servicio)
-);
+ALTER TABLE `pais`
+  ADD CONSTRAINT `fk_pais_continente` FOREIGN KEY (`id_conti`) REFERENCES `continente` (`id_conti`);
 
--- Detalle con criterios específicos de reseñas
-CREATE TABLE detalle_resenas (
-  id_detalle_resena INT AUTO_INCREMENT PRIMARY KEY,
-  id_resena INT NOT NULL,
-  criterio VARCHAR(100) NOT NULL,
-  calificacion DECIMAL(2,1) NOT NULL CHECK (calificacion BETWEEN 1.0 AND 5.0),
-  CONSTRAINT fk_detresena_resena FOREIGN KEY (id_resena) REFERENCES resenas (id_resena) ON DELETE CASCADE
-);
+ALTER TABLE `departamento`
+  ADD CONSTRAINT `fk_departamento_pais` FOREIGN KEY (`id_pais`) REFERENCES `pais` (`id_pais`);
 
--- Pagos de los Planes de Viaje
-CREATE TABLE pagos (
-  id_pago INT AUTO_INCREMENT PRIMARY KEY,
-  id_plan_viaje INT NOT NULL,
-  id_met_pago INT NOT NULL,
-  valor_total DECIMAL(10,2) NOT NULL,
-  estado ENUM('PENDIENTE', 'APROBADO', 'RECHAZADO', 'REEMBOLSADO') DEFAULT 'PENDIENTE',
-  referencia_transaccion VARCHAR(100) NOT NULL UNIQUE,
-  fecha_pago DATETIME DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_pago_plan FOREIGN KEY (id_plan_viaje) REFERENCES plan_viaje (id_plan_viaje),
-  CONSTRAINT fk_pago_metodo FOREIGN KEY (id_met_pago) REFERENCES metodo_pago (id_met_pago)
-);
+ALTER TABLE `ciudad`
+  ADD CONSTRAINT `fk_ciudad_departamento` FOREIGN KEY (`id_depart`) REFERENCES `departamento` (`id_depart`);
 
--- Transferencias de pago a Proveedores (Monetización)
-CREATE TABLE pago_proveedor (
-  id_pago_prov INT AUTO_INCREMENT PRIMARY KEY,
-  id_pago INT NOT NULL,
-  id_prov INT NOT NULL,
-  monto_subtotal DECIMAL(10,2) NOT NULL,
-  comision_plataforma DECIMAL(10,2) DEFAULT 0.00,
-  monto_neto_proveedor DECIMAL(10,2) NOT NULL,
-  estado_transferencia ENUM('PENDIENTE', 'TRANSFERIDO', 'RETENIDO') DEFAULT 'PENDIENTE',
-  fecha_transferencia DATETIME DEFAULT NULL,
-  CONSTRAINT fk_pagoprov_pago FOREIGN KEY (id_pago) REFERENCES pagos (id_pago) ON DELETE CASCADE,
-  CONSTRAINT fk_pagoprov_proveedor FOREIGN KEY (id_prov) REFERENCES proveedor (id_prov)
-);
+ALTER TABLE `ubicacion`
+  ADD CONSTRAINT `fk_ubicacion_ciudad` FOREIGN KEY (`id_cdad`) REFERENCES `ciudad` (`id_cdad`);
+
+ALTER TABLE `trayecto`
+  ADD CONSTRAINT `fk_trayecto_destino` FOREIGN KEY (`id_destino`) REFERENCES `ubicacion` (`id_ubi`),
+  ADD CONSTRAINT `fk_trayecto_origen` FOREIGN KEY (`id_origen`) REFERENCES `ubicacion` (`id_ubi`);
+
+ALTER TABLE `condiciones`
+  ADD CONSTRAINT `fk_condiciones_politica` FOREIGN KEY (`id_poli`) REFERENCES `politica` (`id_poli`);
+
+ALTER TABLE `usuario`
+  ADD CONSTRAINT `fk_usuario_rol` FOREIGN KEY (`id_rol`) REFERENCES `rol` (`id_rol`);
+
+ALTER TABLE `auditoria_rol`
+  ADD CONSTRAINT `fk_audrol_admin` FOREIGN KEY (`id_admin`) REFERENCES `usuario` (`id_usu`),
+  ADD CONSTRAINT `fk_audrol_afectado` FOREIGN KEY (`id_usu_afectado`) REFERENCES `usuario` (`id_usu`);
+
+ALTER TABLE `solicitud_proveedor`
+  ADD CONSTRAINT `fk_solicitud_usuario` FOREIGN KEY (`id_usu`) REFERENCES `usuario` (`id_usu`);
+
+ALTER TABLE `documentos`
+  ADD CONSTRAINT `fk_documentos_solicitud` FOREIGN KEY (`id_sp`) REFERENCES `solicitud_proveedor` (`id_sp`),
+  ADD CONSTRAINT `fk_documentos_usuario` FOREIGN KEY (`id_usu`) REFERENCES `usuario` (`id_usu`) ON DELETE CASCADE;
+
+ALTER TABLE `solicitud_tp_servicio`
+  ADD CONSTRAINT `fk_sol_serv_sp` FOREIGN KEY (`id_sp`) REFERENCES `solicitud_proveedor` (`id_sp`) ON DELETE CASCADE,
+  ADD CONSTRAINT `fk_sol_serv_tp` FOREIGN KEY (`id_tp_serv`) REFERENCES `tp_servicio` (`id_tp_serv`);
+
+ALTER TABLE `proveedor`
+  ADD CONSTRAINT `fk_proveedor_solicitud` FOREIGN KEY (`id_sp`) REFERENCES `solicitud_proveedor` (`id_sp`),
+  ADD CONSTRAINT `fk_proveedor_usuario` FOREIGN KEY (`id_usu`) REFERENCES `usuario` (`id_usu`);
+
+ALTER TABLE `proveedor_tp_servicio`
+  ADD CONSTRAINT `fk_prov_serv_prov` FOREIGN KEY (`id_prov`) REFERENCES `proveedor` (`id_prov`) ON DELETE CASCADE,
+  ADD CONSTRAINT `fk_prov_serv_tp` FOREIGN KEY (`id_tp_serv`) REFERENCES `tp_servicio` (`id_tp_serv`);
+
+ALTER TABLE `servicio`
+  ADD CONSTRAINT `fk_servicio_gama` FOREIGN KEY (`id_gama`) REFERENCES `gama` (`id_gama`),
+  ADD CONSTRAINT `fk_servicio_proveedor` FOREIGN KEY (`id_prov`) REFERENCES `proveedor` (`id_prov`),
+  ADD CONSTRAINT `fk_servicio_tp_serv` FOREIGN KEY (`id_tp_serv`) REFERENCES `tp_servicio` (`id_tp_serv`),
+  ADD CONSTRAINT `fk_servicio_tp_turi` FOREIGN KEY (`id_tp_turi`) REFERENCES `tp_turismo` (`id_tp_turi`),
+  ADD CONSTRAINT `fk_servicio_ubicacion` FOREIGN KEY (`id_ubi`) REFERENCES `ubicacion` (`id_ubi`);
+
+ALTER TABLE `servicio_condicion`
+  ADD CONSTRAINT `fk_servcondi_condicion` FOREIGN KEY (`id_condi`) REFERENCES `condiciones` (`id_condi`),
+  ADD CONSTRAINT `fk_servcondi_servicio` FOREIGN KEY (`id_servicio`) REFERENCES `servicio` (`id_servicio`) ON DELETE CASCADE;
+
+ALTER TABLE `servicio_gastronomia`
+  ADD CONSTRAINT `fk_gast_servicio` FOREIGN KEY (`id_servicio`) REFERENCES `servicio` (`id_servicio`) ON DELETE CASCADE;
+
+ALTER TABLE `servicio_guia`
+  ADD CONSTRAINT `fk_guia_servicio` FOREIGN KEY (`id_servicio`) REFERENCES `servicio` (`id_servicio`) ON DELETE CASCADE;
+
+ALTER TABLE `servicio_hospedaje`
+  ADD CONSTRAINT `fk_hosp_servicio` FOREIGN KEY (`id_servicio`) REFERENCES `servicio` (`id_servicio`) ON DELETE CASCADE;
+
+ALTER TABLE `servicio_imagen`
+  ADD CONSTRAINT `fk_servimg_servicio` FOREIGN KEY (`id_servicio`) REFERENCES `servicio` (`id_servicio`) ON DELETE CASCADE;
+
+ALTER TABLE `servicio_recreacion`
+  ADD CONSTRAINT `fk_rec_servicio` FOREIGN KEY (`id_servicio`) REFERENCES `servicio` (`id_servicio`) ON DELETE CASCADE;
+
+ALTER TABLE `servicio_transporte`
+  ADD CONSTRAINT `fk_trans_des` FOREIGN KEY (`id_destino`) REFERENCES `ubicacion` (`id_ubi`),
+  ADD CONSTRAINT `fk_trans_ori` FOREIGN KEY (`id_origen`) REFERENCES `ubicacion` (`id_ubi`),
+  ADD CONSTRAINT `fk_trans_servicio` FOREIGN KEY (`id_servicio`) REFERENCES `servicio` (`id_servicio`) ON DELETE CASCADE;
+
+ALTER TABLE `plan_viaje`
+  ADD CONSTRAINT `fk_plan_destino` FOREIGN KEY (`id_ubicacion_destino`) REFERENCES `ubicacion` (`id_ubi`),
+  ADD CONSTRAINT `fk_plan_origen` FOREIGN KEY (`id_ubicacion_origen`) REFERENCES `ubicacion` (`id_ubi`),
+  ADD CONSTRAINT `fk_plan_usuario` FOREIGN KEY (`id_usu`) REFERENCES `usuario` (`id_usu`);
+
+ALTER TABLE `det_plan_viaje`
+  ADD CONSTRAINT `fk_detplan_destino` FOREIGN KEY (`id_ubicacion_destino`) REFERENCES `ubicacion` (`id_ubi`),
+  ADD CONSTRAINT `fk_detplan_origen` FOREIGN KEY (`id_ubicacion_origen`) REFERENCES `ubicacion` (`id_ubi`),
+  ADD CONSTRAINT `fk_detplan_plan` FOREIGN KEY (`id_plan_viaje`) REFERENCES `plan_viaje` (`id_plan_viaje`) ON DELETE CASCADE,
+  ADD CONSTRAINT `fk_detplan_servicio` FOREIGN KEY (`id_servicio`) REFERENCES `servicio` (`id_servicio`);
+
+ALTER TABLE `pagos`
+  ADD CONSTRAINT `fk_pago_metodo` FOREIGN KEY (`id_met_pago`) REFERENCES `metodo_pago` (`id_met_pago`),
+  ADD CONSTRAINT `fk_pago_plan` FOREIGN KEY (`id_plan_viaje`) REFERENCES `plan_viaje` (`id_plan_viaje`);
+
+ALTER TABLE `pago_proveedor`
+  ADD CONSTRAINT `fk_pagoprov_pago` FOREIGN KEY (`id_pago`) REFERENCES `pagos` (`id_pago`) ON DELETE CASCADE,
+  ADD CONSTRAINT `fk_pagoprov_proveedor` FOREIGN KEY (`id_prov`) REFERENCES `proveedor` (`id_prov`);
+
+ALTER TABLE `resenas`
+  ADD CONSTRAINT `fk_resena_servicio` FOREIGN KEY (`id_servicio`) REFERENCES `servicio` (`id_servicio`),
+  ADD CONSTRAINT `fk_resena_usuario` FOREIGN KEY (`id_usu`) REFERENCES `usuario` (`id_usu`);
+
+ALTER TABLE `detalle_resenas`
+  ADD CONSTRAINT `fk_detresena_resena` FOREIGN KEY (`id_resena`) REFERENCES `resenas` (`id_resena`) ON DELETE CASCADE;
+
+-- ============================================================================
+-- PARTE 3: INSERCIONES DE DATOS
+-- ============================================================================
+
+INSERT INTO `rol` VALUES
+(1,'Turista','Usuario final que explora catálogo, arma planes de viaje y reserva servicios.'),
+(2,'Administrador','Personal de administración y control del SENA / PAT con permisos globales.'),
+(3,'Proveedor','Prestador de servicios turísticos verificado (Hoteles, Restaurantes, Transportes, Guías).');
+
+INSERT INTO `continente` VALUES
+(2,'América del Norte'),
+(1,'América del Sur'),
+(4,'Asia'),
+(3,'Europa'),
+(5,'Oceanía');
+
+INSERT INTO `pais` VALUES
+(1,'Colombia',1),
+(2,'Estados Unidos',2),
+(3,'España',3);
+
+INSERT INTO `departamento` VALUES
+(1,'Bogotá D.C.',1),
+(2,'Antioquia',1),
+(3,'Bolívar',1),
+(4,'Magdalena',1),
+(5,'Quindío',1),
+(6,'Risaralda',1),
+(7,'Valle del Cauca',1),
+(8,'Santander',1),
+(9,'Boyacá',1),
+(10,'Amazonas',1),
+(11,'San Andrés y Providencia',1),
+(12,'Cundinamarca',1);
+
+INSERT INTO `ciudad` VALUES
+(1,'Bogotá',1),
+(2,'Medellín',2),
+(3,'Guatapé',2),
+(4,'Santa Fe de Antioquia',2),
+(5,'Cartagena de Indias',3),
+(6,'Santa Marta',4),
+(7,'Minca',4),
+(8,'Armenia',5),
+(9,'Salento',5),
+(10,'Filandia',5),
+(11,'Pereira',6),
+(12,'Cali',7),
+(13,'Buga',7),
+(14,'Bucaramanga',8),
+(15,'San Gil',8),
+(16,'Barichara',8),
+(17,'Tunja',9),
+(18,'Villa de Leyva',9),
+(19,'Leticia',10),
+(20,'Puerto Nariño',10),
+(21,'San Andrés Isla',11),
+(22,'Zipaquirá',12),
+(23,'Girardot',12),
+(24,'Guatavita',12),
+(25,'Suesca',12);
+
+INSERT INTO `ubicacion` VALUES
+(1,'Cerro de Monserrate, Carrera 2 Este # 21-48','Centro Histórico - Las Aguas','110321',4.60583300,-74.05638900,'Santuario del Señor Caído de Monserrate con mirador panorámico de la ciudad.',1,1),
+(2,'Calle 26 # 69-76','Ciudad Salitre Oriental','110931',4.65821000,-74.11325000,'Corredor hotelero y empresarial próximo al Aeropuerto Internacional El Dorado.',1,1),
+(3,'Carrera 7 # 116-60','Usaquén Plaza','110111',4.69389000,-74.03222000,'Zona gastronómica, colonial y cultural al norte de Bogotá.',1,1),
+(4,'Terminal de Transportes Salitre, Diagonal 23 # 69A-55','Salitre','110931',4.65340000,-74.11620000,'Módulo principal de salidas y llegadas de transporte intermunicipal.',1,1),
+(5,'Carrera 6 # 15-88','La Candelaria','111711',4.59750000,-74.07250000,'Corazón colonial de Bogotá, museos y arquitectura virreinal.',1,1),
+(6,'Carrera 43A # 1 Sur-150','El Poblado','050021',6.20833000,-75.56889000,'Milla de oro en El Poblado, zona de hospedaje de lujo y gastronomía.',2,1),
+(7,'Calle 10 # 36-24','Parque Lleras','050021',6.20917000,-75.56778000,'Epicentro de ocio, bares, cafeterías y vida nocturna.',2,1),
+(8,'Terminal del Norte, Carrera 64C # 78-580','Caribe','050034',6.27361000,-75.57694000,'Conexión terrestre hacia el oriente antioqueño y la costa atlántica.',2,1),
+(9,'Vereda La Piedra, Kilómetro 1 Vía El Peñol','Sector La Piedra','053847',6.22083000,-75.17944000,'Acceso principal al monolito Piedra del Peñol y embalse de Guatapé.',3,1),
+(10,'Calle del Recuerdo # 29-14','Centro','053840',6.23306000,-75.15806000,'Casco urbano colorido y zócalos tradicionales de Guatapé.',3,1),
+(11,'Calle Santo Domingo # 33-29','Centro Amurallado','130001',10.42361000,-75.55167000,'Casco antiguo histórico amurallado, balcones floridos y plazas coloniales.',5,1),
+(12,'Avenida San Martín # 5-100','Bocagrande','130001',10.40472000,-75.55694000,'Zona hotelera costera frente al mar Caribe con rascacielos y playas.',5,1),
+(13,'Muelle de La Bodeguita, Avenida Blas de Lezo','La Matuna','130001',10.42194000,-75.54833000,'Punto de partida de lanchas hacia las Islas del Rosario y Barú.',5,1),
+(14,'Carrera 1C # 18-42','Bahía de Santa Marta','470004',11.24472000,-74.21417000,'Malecón de Bastidas frente al mar y acceso al centro histórico samario.',6,1),
+(15,'Kilómetro 32 Vía a Riohacha','Entrada El Zaino - Parque Tayrona','470007',11.29417000,-73.93167000,'Acceso principal a las playas cristalinas de Cabo San Juan y Cañaveral.',6,1),
+(16,'Vereda Minca Centro, Kilómetro 14','Sierra Nevada','470006',11.14444000,-74.11861000,'Capital ecológica de la Sierra Nevada, cascadas y fincas cafeteras.',7,1),
+(17,'Carrera 6 # 3-20','Plaza Bolívar de Salento','631020',4.63750000,-75.57083000,'Punto de partida a jeeps Willys hacia el Valle del Cocora.',9,1),
+(18,'Valle del Cocora, Kilómetro 11','Sector Bosque de Palmas','631028',4.63917000,-75.48583000,'Santuario de la Palma de Cera, árbol nacional de Colombia.',9,1),
+(19,'Calle 7 # 6-12','Mirador de Filandia','631001',4.67389000,-75.66111000,'Pueblo de artesanos en cestería y mirador panorámico de la cordillera.',10,1),
+(20,'Kilómetro 4 Vía Armenia - Pueblo Tapao','Corredor Turístico','630003',4.51222000,-75.76194000,'Cerca al Parque Nacional del Café y haciendas cafeteras tradicionales.',8,1),
+(21,'Carrera 5 # 4-22','Centro Histórico de Barichara','684041',6.63583000,-73.22417000,'El pueblito más lindo de Colombia, arquitectura en tapia pisada y piedra.',16,1),
+(22,'Malecón del Río Fonce, Calle 11 # 10-02','Sector El Gallineral','684031',6.55417000,-73.13611000,'Capital del turismo de aventura y deportes extremos en Santander.',15,1),
+(23,'Plaza Mayor, Carrera 9 # 12-40','Centro Histórico','154001',5.63222000,-73.52500000,'La plaza empedrada más grande de Colombia y arquitectura colonial protegida.',18,1),
+(24,'Carrera 11 # 8-30, Frente al Río Amazonas','Malecón Turístico','910001',-4.21528000,-69.94056000,'Puerto fluvial fronterizo y punto de salida de expediciones selváticas.',19,1),
+(25,'Avenida Colombia # 1-19, Spratt Bight','Peatonal de San Andrés','880001',12.58472000,-81.70056000,'Frente al Mar de los Siete Colores y playa principal de la isla.',21,1),
+(26,'Parque de la Sal, Carrera 6 Calle 1','Sector Mina','250252',5.01917000,-74.00889000,'Primera maravilla de Colombia: Catedral de Sal subterránea.',22,1),
+(27,'Avenida 4 Norte # 10N-25','Granada','760045',3.45639000,-76.53389000,'Zona rosa gastronómica y hoteles ejecutivos en Santiago de Cali.',12,1),
+(28,'los pijaos, bogota','Los Pijaos',NULL,4.56591610,-74.10466030,'Los Pijaos, UPZs de Bogotá, Localidad Rafael Uribe Uribe, Bogotá ciudad, Bogotá, Distrito Capital, RAP (Especial) Central, 111821, Colombia',NULL,1),
+(29,'hotel Tequendama, Bogotá','San Diego',NULL,4.61298410,-74.07061670,'Hotel Tequendama Bogotá, Carrera 10, Avenida Carrera 10, San Diego, UPZs de Bogotá, Localidad Santa Fé, Bogotá ciudad, Bogotá, Distrito Capital, RAP (Especial) Central, 110311, Colombia',NULL,1),
+(30,'parque tayrona, santa marta',NULL,NULL,11.32355800,-74.05180740,'Parque Nacional Natural Tayrona, Santa Marta, Magdalena, RAP Caribe, Colombia',6,1),
+(31,'Calle 24 # 6-00, Bogotá','UPZs de Bogotá',NULL,4.60854140,-74.06787440,'Calle 24, UPZs de Bogotá, Localidad Santa Fé, Bogotá ciudad, Bogotá, Distrito Capital, RAP (Especial) Central, 110311, Colombia',NULL,1),
+(32,'Parque Berrío, Medellín','La Candelaria',NULL,6.25001510,-75.56813600,'Parque Berrío, La Candelaria, Comuna 10 - La Candelaria, Perímetro Urbano Medellín, Medellín, Valle de Aburrá, Antioquia, RAP del Agua y la Montaña, Colombia',NULL,1),
+(33,'Carrera 7 # 28-66, San Martin, Bogota','San Martín',NULL,4.61552380,-74.06841310,'Museo Nacional de Colombia, 28-66, Avenida Carrera 7, San Martín, UPZs de Bogotá, Localidad Santa Fé, Bogotá ciudad, Bogotá, Distrito Capital, RAP (Especial) Central, 110311, Colombia',NULL,1),
+(34,'calle 26','La Palma',NULL,6.22774160,-75.60109070,'Calle 26, La Palma, Comuna 16 - Belén, Perímetro Urbano Medellín, Medellín, Valle de Aburrá, Antioquia, RAP del Agua y la Montaña, 050025, Colombia',NULL,1),
+(35,'los pijaos, bogota','Los Pijaos',NULL,4.56797613,-74.10540104,'Ubicación ajustada manualmente en el mapa',1,1),
+(36,'los pijaos, bogota','Los Pijaos',NULL,4.56830767,-74.10499334,'Ubicación ajustada manualmente en el mapa',1,1);
+
+INSERT INTO `trayecto` VALUES
+(1,4,27,460.50,540,'2026-01-20 08:00:00'),
+(2,4,11,1045.00,1080,'2026-01-20 08:30:00'),
+(3,4,17,305.20,420,'2026-01-20 09:00:00'),
+(4,8,6,28.50,45,'2026-01-20 09:30:00'),
+(5,4,23,165.80,210,'2026-01-20 10:00:00'),
+(6,4,26,48.00,75,'2026-01-20 10:30:00'),
+(7,13,11,42.00,55,'2026-01-20 11:00:00');
+
+INSERT INTO `gama` VALUES
+(1,'Económica','Opciones accesibles, mochileras y de bajo costo con calidad garantizada.'),
+(2,'Media / Estándar','Excelente relación costo-beneficio para viajes familiares, parejas y amigos.'),
+(3,'Alta / Superior','Servicios con estándares elevados de confort, gastronomía premium y amenidades exclusivas.'),
+(4,'Lujo / Premium','Experiencias 5 estrellas, exclusividad, confort superior y atención personalizada.');
+
+INSERT INTO `metodo_pago` VALUES
+(1,'Tarjeta de Crédito (Visa / Mastercard / Amex)','Procesamiento en línea inmediato con pasarela de pagos segura.'),
+(2,'PSE (Pagos Seguros en Línea)','Débito directo desde cuentas de ahorro y corrientes en bancos colombianos.'),
+(3,'Nequi / Daviplata','Billeteras digitales móviles con transferencias inmediatas por código QR o teléfono.'),
+(4,'Transferencia Bancaria Bancolombia','Consignación o transferencia directa a la cuenta corporativa del prestador.'),
+(5,'Efectivo en Punto Físico','Pago directo en taquilla o recepción al momento del check-in o inicio de actividad.');
+
+INSERT INTO `politica` VALUES
+(1,'Política General de Cancelación PAT','Condiciones sobre devoluciones y plazos de previo aviso para cancelaciones de reservas.','ACTIVA'),
+(2,'Política de Seguridad y Seguros de Viaje','Protocolos de primeros auxilios, seguros contra accidentes y pólizas de responsabilidad civil.','ACTIVA'),
+(3,'Política de Check-in y Registro Legal','Requisitos de presentación de documentos de identidad física para ingreso a alojamientos.','ACTIVA'),
+(4,'Política de Sostenibilidad y Cuidado Ambiental','Compromiso de cero huella de plástico, no extracción de fauna/flora y respeto a comunidades indígenas.','ACTIVA'),
+(5,'Política de Mascotas (Pet Friendly)','Normas de admisión, higiene y tarifas suplementarias para mascotas de compañía.','ACTIVA');
+
+INSERT INTO `condiciones` VALUES
+(1,'Cancelación Flexible (48 Horas)','Reembolso del 100% notificando con mínimo 48 horas de anticipación a la fecha del servicio.','CANCELACION','ACTIVA',1),
+(2,'Cancelación Moderada (7 Días)','Reembolso del 70% si cancela hasta 7 días antes; no reembolsable posteriormente.','CANCELACION','ACTIVA',1),
+(3,'No Reembolsable Promocional','Tarifa no modificable ni reembolsable bajo ninguna circunstancia.','CANCELACION','ACTIVA',1),
+(4,'Anticipo Requerido del 50%','Se requiere abonar el 50% del valor total para confirmar el bloqueo de fechas.','PAGO','ACTIVA',1),
+(5,'Pago 100% al Momento de la Reserva','Pago inmediato total a través de la plataforma para emisión de váucher.','PAGO','ACTIVA',1),
+(6,'Check-in 15:00 / Check-out 12:00','Horarios estandarizados de entrega y desocupación de habitaciones.','USO','ACTIVA',3),
+(7,'Documento de Identidad Original Obligatorio','No se aceptan fotocopias simples para el registro hotelero de adultos ni menores de edad.','RESERVA','ACTIVA',3),
+(8,'Póliza Médica de Senderismo Incluida','Cobertura de rescate y primeros auxilios en montaña y zonas de ecoturismo.','RESERVA','ACTIVA',2),
+(9,'Prohibición Total de Plásticos de un Solo Uso','Los visitantes deben portar termos reutilizables dentro de parques naturales.','USO','ACTIVA',4),
+(10,'Mascotas de Compañía Permitidas con Carné de Vacunas','Admitido con correa en zonas comunes y depósito de aseo preventivo.','USO','ACTIVA',5);
+
+INSERT INTO `tp_servicio` VALUES
+(1,'Hospedaje','Alojamientos, hoteles boutique, resorts, hostales, cabañas y glampings.'),
+(2,'Gastronomía','Restaurantes, comida típica, experiencias culinarias, asaderos y cafeterías de origen.'),
+(3,'Recreación y Destinos','Atracciones, parques temáticos, museos, santuarios y sitios de interés turístico.'),
+(4,'Transporte','Rutas intermunicipales en bus, vanes turísticas, vuelos directos y traslados ejecutivos.'),
+(5,'Guía Turístico','Acompañamiento profesional bilingüe, tours especializados y senderismo interpretativo.');
+
+INSERT INTO `tp_turismo` VALUES
+(1,'Cultural e Histórico','Recorridos por centros históricos, monumentos coloniales, museos y patrimonio arquitectónico.'),
+(2,'Ecoturismo y Naturaleza','Senderismo, reservas naturales, avistamiento de fauna y flora, y paisajes protegidos.'),
+(3,'Sol y Playa','Destinos costeros e insulares en el Caribe y Pacífico colombiano para descanso y deportes acuáticos.'),
+(4,'Aventura y Deportes Extremos','Rafting, parapente, espeleología, rappel, canyoning y buceo.'),
+(5,'Gastronómico','Rutas de café, degustación de platos autóctonos, cocina fusión y plazas de mercado tradicionales.'),
+(6,'Religioso y Espiritual','Peregrinaciones, basílicas, santuarios y celebraciones de semana santa.'),
+(7,'Bienestar y Relax','Termalismo, spas naturales, retiros de yoga y desconexión en entornos naturales.'),
+(8,'Rural y Comunitario','Inmersión en fincas campesinas, cosechas cafeteras y tradiciones de comunidades locales.');
+
+INSERT INTO `usuario` VALUES
+(1,'Carlos','Gómez Admin','admin@pat.gov.co','$2b$12$e1rZ.gO4b3U2n1l9.w7mEehY0q3V5cT.7x4dJ8pP7tK4y2q9.aZ5G',2,1,NULL,NULL,'2026-01-10 13:00:00'),
+(2,'Laura','Sánchez Directora','laura.admin@pat.gov.co','$2b$12$e1rZ.gO4b3U2n1l9.w7mEehY0q3V5cT.7x4dJ8pP7tK4y2q9.aZ5G',2,1,NULL,NULL,'2026-01-11
 </file>
 
 </files>
