@@ -1,4 +1,4 @@
-const API_BASE = "http://127.0.0.1:8000/pagos";
+const API_BASE = "https://proyectopatoficial-production.up.railway.app/pagos";
 const token = localStorage.getItem("token");
 let metodoSeleccionado = 1; // 1: Tarjeta, 2: PSE, 3: Billetera (ids de la tabla metodo_pago)
 let totalPlan = 0;

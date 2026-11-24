@@ -1,4 +1,4 @@
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = "https://proyectopatoficial-production.up.railway.app";
 
 const NOMBRES_ROL = {
     1: "Viajero",
