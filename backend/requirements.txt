@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
-sqlmodel
+sqlmodel==0.0.42
+SQLAlchemy==2.0.52
 pymysql
 pydantic-settings
 python-jose[cryptography]
@@ -8,3 +9,5 @@ bcrypt
 python-multipart
 email-validator
 geopy
+
+
