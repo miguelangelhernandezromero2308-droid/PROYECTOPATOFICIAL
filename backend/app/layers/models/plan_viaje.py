@@ -11,7 +11,7 @@ class PlanViaje(SQLModel, table=True):
     fecha_fin: date
     costo_total_estimado: Decimal = Field(default=Decimal("0.00"), max_digits=10, decimal_places=2)
     estado: str = Field(default="DESEO")
-    created_at: Optional[datetime] = None
+    created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
     id_usu: int
     id_ubicacion_origen: Optional[int] = None   
     id_ubicacion_destino: Optional[int] = None  

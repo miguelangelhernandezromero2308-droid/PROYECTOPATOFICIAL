@@ -38,7 +38,7 @@ class User(SQLModel, table=True):
 
     token_expiracion: Optional[datetime] = None
 
-    created_at: Optional[datetime] = None
+    created_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
 
 # ======================================================

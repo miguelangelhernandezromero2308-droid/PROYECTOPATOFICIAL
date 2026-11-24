@@ -16,7 +16,7 @@ class Servicio(SQLModel, table=True):
     disponibilidad: bool = Field(default=True)
     activo: bool = Field(default=True)
     fecha_creacion: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = Field(default_factory=datetime.utcnow)
 
 # 2. TABLA HIJA (Los Espacios / Habitaciones)
 class ServicioHospedaje(SQLModel, table=True):
